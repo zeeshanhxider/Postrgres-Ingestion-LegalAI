@@ -1,0 +1,257 @@
+# 🚀 LEGAL AI HELPER - PRODUCTION DEPLOYMENT COMMANDS
+# Complete setup guide for production server with Ollama + Docker + PostgreSQL
+
+# ===============================================================================
+# 📋 PREREQUISITES
+# ===============================================================================
+# - Docker and Docker Compose installed
+# - Ollama installed and running (https://ollama.com/download)
+# - GPU drivers properly configured for Ollama
+# - Python virtual environment activated
+
+# ===============================================================================
+# 🧹 STEP 1: CLEAN EXISTING SETUP
+# ===============================================================================
+
+# Stop all running containers
+docker compose down
+
+# Remove existing containers and networks
+docker compose down --remove-orphans
+
+# Remove postgres data volume (clean database)
+docker volume rm law-helper_postgres_data 2>/dev/null || true
+
+# Optional: Remove all unused Docker resources
+# docker system prune -f
+
+# Clean any existing database connections
+pkill -f postgres || true
+
+# ===============================================================================
+# 🐳 STEP 2: REBUILD DOCKER ENVIRONMENT
+# ===============================================================================
+
+# Pull latest PostgreSQL with pgvector support
+docker pull pgvector/pgvector:pg16
+
+# Rebuild and start all services (postgres, redis, api)
+docker compose up -d --build
+
+# Wait for services to be healthy (check logs)
+docker compose logs -f
+
+# Verify all containers are running
+docker compose ps
+
+# ===============================================================================
+# 📊 STEP 3: VERIFY DATABASE INITIALIZATION
+# ===============================================================================
+
+# Check database info and table creation
+source venv/bin/activate
+DATABASE_URL="postgresql://legal_user:legal_pass@localhost:5432/all_cases_llama" python scripts/reset_database.py --action info
+
+# Expected output: 17 tables created, all with 0 rows
+
+# ===============================================================================
+# 🤖 STEP 4: SETUP OLLAMA FOR PRODUCTION
+# ===============================================================================
+
+# Pull required Ollama models for AI extraction and embeddings
+ollama pull qwen:32b             # For AI extraction (default model)
+ollama pull mxbai-embed-large    # For embeddings (default model)
+
+# Verify Ollama is running and models are available
+ollama list
+
+# Test Ollama connection
+curl http://localhost:11434/api/generate -d '{
+  "model": "llama3.3:latest",
+  "prompt": "Test connection",
+  "stream": false
+}'
+
+# ===============================================================================
+# ⚙️ STEP 5: CONFIGURE ENVIRONMENT FOR OLLAMA
+# ===============================================================================
+
+# 🔧 CHANGE MODELS (Optional): 
+# You can use different models by changing these environment variables:
+# 
+# Popular Ollama Models for AI Extraction:
+# export OLLAMA_MODEL="qwen:32b"           # Default (excellent for structured output)
+# export OLLAMA_MODEL="llama3.3:latest"    # Alternative (most recent)
+# export OLLAMA_MODEL="llama3.1:8b"        # Alternative (faster, smaller)
+# export OLLAMA_MODEL="llama3.1:70b"       # Alternative (more powerful, slower)
+# export OLLAMA_MODEL="mixtral:8x7b"       # Alternative (good for complex reasoning)
+#
+# Popular Embedding Models:
+# export OLLAMA_EMBED_MODEL="mxbai-embed-large"  # Default (best quality)
+# export OLLAMA_EMBED_MODEL="nomic-embed-text"   # Alternative option
+# export OLLAMA_EMBED_MODEL="all-minilm"         # Lightweight option
+
+# Set environment variables for Ollama usage
+export USE_OLLAMA=true
+export OLLAMA_MODEL="qwen:32b"
+export OLLAMA_EMBED_MODEL="mxbai-embed-large"
+export OLLAMA_BASE_URL="http://localhost:11434"
+
+# Verify no OpenAI key is set (optional, for pure Ollama usage)
+# unset OPENAI_API_KEY
+
+# ===============================================================================
+# 📁 STEP 6: PREPARE PDF FILES FOR PROCESSING
+# ===============================================================================
+
+# Create directory for PDF files (if not exists)
+mkdir -p pdfs_to_process
+
+# Copy your PDF files to the processing directory
+# cp /path/to/your/pdfs/*.pdf pdfs_to_process/
+
+# Check files are ready
+ls -la pdfs_to_process/
+
+# ===============================================================================
+# 🚀 STEP 7: RUN BATCH PROCESSING WITH OLLAMA
+# ===============================================================================
+
+# Process all PDFs with Ollama (both extraction and embedding)
+python batch_processor.py pdfs_to_process/ --limit 10
+
+# Alternative: Process with higher concurrency (if GPU can handle)
+# python batch_processor.py pdfs_to_process/ --limit 50 --workers 4
+
+# Alternative: Process specific number of files for testing
+# python batch_processor.py pdfs_to_process/ --limit 5
+
+# ===============================================================================
+# 📊 STEP 8: VERIFY PROCESSING RESULTS
+# ===============================================================================
+
+# Check database population after processing
+DATABASE_URL="postgresql://legal_user:legal_pass@localhost:5432/all_cases_llama" python scripts/reset_database.py --action info
+
+# Expected to see populated tables:
+# - cases: N (number of processed PDFs)
+# - parties: X
+# - attorneys: Y
+# - judges: Z
+# - issues: W
+# - case_chunks: Many
+# - word_dictionary: Thousands
+# - case_phrases: Hundreds
+
+# ===============================================================================
+# 🔍 STEP 9: DATABASE INSPECTION COMMANDS
+# ===============================================================================
+
+# Connect to PostgreSQL directly for inspection
+docker exec -it legal_ai_postgres psql -U legal_user -d all_cases_llama
+
+# Useful SQL queries (run inside psql):
+# \dt                                          -- List all tables
+# SELECT COUNT(*) FROM cases;                  -- Count total cases
+# SELECT case_id, title FROM cases LIMIT 5;   -- View first 5 cases
+# SELECT COUNT(*) FROM case_chunks;           -- Count text chunks
+# SELECT COUNT(*) FROM word_dictionary;       -- Count unique words
+# \q                                           -- Exit psql
+
+# ===============================================================================
+# 📈 STEP 10: PERFORMANCE MONITORING
+# ===============================================================================
+
+# Monitor Docker container resources
+docker stats
+
+# Monitor Ollama usage
+ollama ps
+
+# Check disk usage for database
+docker exec legal_ai_postgres du -sh /var/lib/postgresql/data
+
+# View processing logs
+tail -f batch_processing.log
+
+# ===============================================================================
+# 🛠️ TROUBLESHOOTING COMMANDS
+# ===============================================================================
+
+# If Docker build fails with "database_initializer.py: No such file or directory":
+# This has been fixed in the Dockerfile, but if you see this error:
+# 1. Make sure you have the latest Dockerfile without the database_initializer.py reference
+# 2. Clean Docker build cache:
+docker builder prune -f
+docker compose build --no-cache
+
+# If database issues occur:
+# 1. Clean and restart database
+docker compose down
+docker volume rm law-helper_postgres_data
+docker compose up -d
+
+# 2. If Ollama connection fails:
+systemctl status ollama    # Check Ollama service
+ollama serve              # Start Ollama manually if needed
+
+# 3. If GPU issues with Ollama:
+nvidia-smi                # Check GPU usage
+docker logs legal_ai_api  # Check API container logs
+
+# 4. Reset just the database (keep Docker running):
+DATABASE_URL="postgresql://legal_user:legal_pass@localhost:5432/all_cases_llama" python scripts/reset_database.py --action drop-tables --confirm
+DATABASE_URL="postgresql://legal_user:legal_pass@localhost:5432/all_cases_llama" python scripts/reset_database.py --action recreate
+
+# 5. If permission issues on WSL/Linux:
+sudo chown -R $USER:$USER .
+chmod +x scripts/*.sh
+
+# ===============================================================================
+# 🔄 MAINTENANCE COMMANDS
+# ===============================================================================
+
+# Regular backup of database
+docker exec legal_ai_postgres pg_dump -U legal_user all_cases_llama > backup_$(date +%Y%m%d).sql
+
+# View system resource usage
+htop
+df -h
+
+# Check Docker logs for issues
+docker compose logs --tail=100
+
+# Update Ollama models (when new versions available)
+ollama pull llama3.1:8b
+ollama pull nomic-embed-text
+
+# ===============================================================================
+# 🎯 QUICK START COMMANDS (For Regular Use)
+# ===============================================================================
+
+# Complete fresh start (production)
+docker compose down && docker volume rm law-helper_postgres_data 2>/dev/null || true
+docker compose up -d
+export USE_OLLAMA=true
+python batch_processor.py pdfs_to_process/
+
+# ===============================================================================
+# 📝 NOTES
+# ===============================================================================
+# - Ensure Ollama has GPU access for optimal performance
+# - Monitor GPU memory usage during batch processing
+# - The system uses pgvector for efficient vector storage
+# - All AI extraction and embeddings use Ollama (no OpenAI in production)
+# - Database automatically initializes with 17 tables on first run
+# - Processing speed depends on GPU capabilities and PDF complexity
+# - Each PDF creates: case data, chunks, embeddings, word analysis, legal phrases
+
+# ===============================================================================
+# 🎉 SUCCESS INDICATORS
+# ===============================================================================
+# ✅ Docker containers healthy
+# ✅ Ollama models loaded and responding
+# ✅ Database has 17 tables
+# ✅ Batch processing shows 100% success rate
+# ✅ All tables populated with data
+# ✅ No errors in logs

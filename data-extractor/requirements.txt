@@ -1,0 +1,6 @@
+pandas==2.1.4
+psycopg2-binary==2.9.9
+fuzzywuzzy==0.18.0
+python-Levenshtein==0.23.0
+python-dotenv==1.0.0
+sqlalchemy==2.0.23
