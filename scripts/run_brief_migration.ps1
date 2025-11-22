@@ -9,7 +9,7 @@ Write-Host "====================================================================
 Write-Host ""
 
 # Configuration
-$DB_HOST = if ($env:DB_HOST) { $env:DB_HOST } else { "localhost" }
+$DB_HOST = if ($env:DB_HOST) { $env:DB_HOST } else { "172.23.57.46" }
 $DB_PORT = if ($env:DB_PORT) { $env:DB_PORT } else { "5432" }
 $DB_NAME = if ($env:DB_NAME) { $env:DB_NAME } else { "cases_llama3.3" }
 $DB_USER = if ($env:DB_USER) { $env:DB_USER } else { "postgres" }

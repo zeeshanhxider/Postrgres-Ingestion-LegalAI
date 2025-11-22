@@ -3,13 +3,14 @@ services:
     image: pgvector/pgvector:pg16
     container_name: legal_ai_postgres
     environment:
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: cases_llama3_3
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres123
       POSTGRES_INITDB_ARGS: "--encoding=UTF-8"
     ports:
       - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./scripts/init-postgres.sh:/docker-entrypoint-initdb.d/init-postgres.sh
     command: >
       postgres -c shared_preload_libraries=vector
       -c max_connections=200
@@ -38,7 +39,7 @@ services:
     build: .
     container_name: legal_ai_api
     environment:
-      - DATABASE_URL=postgresql://legal_user:legal_pass@legal_ai_postgres:5432/cases_llama3.3
+      - DATABASE_URL=postgresql://postgres:postgres123@postgres:5432/cases_llama3_3
       - REDIS_URL=redis://redis:6379
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OLLAMA_EMBED_MODEL=${OLLAMA_EMBED_MODEL:-mxbai-embed-large}
