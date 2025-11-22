@@ -25,7 +25,8 @@ def local_ollama_embed(text: str, model: str = None) -> List[float]:
         from langchain_community.embeddings import OllamaEmbeddings
     
     ollama_model = model or os.getenv("OLLAMA_EMBED_MODEL", "mxbai-embed-large")
-    embeddings = OllamaEmbeddings(model=ollama_model)
+    ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    embeddings = OllamaEmbeddings(model=ollama_model, base_url=ollama_base_url)
     return embeddings.embed_query(text)
 
 def openai_embed(text: str, dimensions: int = 1024) -> List[float]:

@@ -13,7 +13,7 @@ from datetime import datetime
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-from ..pdf_parser import PDFParser
+from ..pdf_parser import extract_text_from_pdf, clean_pdf_text, get_pdf_metadata
 from ..chunker import LegalTextChunker
 from .word_processor import WordProcessor
 from .phrase_extractor import PhraseExtractor
@@ -33,7 +33,6 @@ class BriefIngestor:
     
     def __init__(self, db_engine: Engine):
         self.db = db_engine
-        self.pdf_parser = PDFParser()
         self.text_chunker = LegalTextChunker()
         self.word_processor = WordProcessor(db_engine)
         self.phrase_extractor = PhraseExtractor(db_engine)
@@ -62,13 +61,16 @@ class BriefIngestor:
             
             # Step 2: Parse PDF content
             logger.info("📄 Parsing PDF content...")
-            pages = self.pdf_parser.parse_pdf(file_path)
-            full_text = "\n\n".join([page.text for page in pages])
-            logger.info(f"✅ Parsed {len(pages)} pages, {len(full_text)} characters")
+            with open(file_path, 'rb') as f:
+                pdf_content = f.read()
+            pages_text = extract_text_from_pdf(pdf_content)
+            full_text = "\n\n".join(pages_text)
+            full_text = clean_pdf_text(full_text)
+            logger.info(f"✅ Parsed {len(pages_text)} pages, {len(full_text)} characters")
             
             # Step 3: Insert brief record with multi-strategy case linking
             logger.info("💾 Creating brief record with case linking...")
-            brief_id, case_id = self._insert_brief(metadata, full_text, len(pages))
+            brief_id, case_id = self._insert_brief(metadata, full_text, len(pages_text))
             
             if case_id:
                 logger.info(f"✅ Linked to case_id: {case_id}")
@@ -81,7 +83,7 @@ class BriefIngestor:
             
             # Step 5: Create chunks for RAG
             logger.info("📄 Creating text chunks...")
-            chunks = self.text_chunker.chunk_pages(pages)
+            chunks = self.text_chunker.chunk_pages(pages_text)
             logger.info(f"✅ Created {len(chunks)} text chunks")
             
             # Step 6: Insert chunks with section detection
@@ -89,15 +91,15 @@ class BriefIngestor:
             chunk_ids = self._insert_chunks(brief_id, case_id, chunks)
             logger.info(f"✅ Inserted {len(chunk_ids)} chunks")
             
-            # Step 7: Process sentences
-            logger.info("✂️ Processing sentences...")
-            sentence_stats = self._process_sentences(brief_id, chunks, chunk_ids)
-            logger.info(f"✅ Processed {sentence_stats['total_sentences']} sentences")
+            # Step 7: Process sentences (TEMPORARILY DISABLED - too slow with Ollama)
+            # logger.info("✂️ Processing sentences...")
+            # sentence_stats = self._process_sentences(brief_id, chunks, chunk_ids)
+            # logger.info(f"✅ Processed {sentence_stats['total_sentences']} sentences")
             
-            # Step 8: Process words for precise search
-            logger.info("📝 Processing words...")
-            word_stats = self._process_words(brief_id, chunks, chunk_ids)
-            logger.info(f"✅ Processed {word_stats['total_words']} words")
+            # Step 8: Process words for precise search (TEMPORARILY DISABLED)
+            # logger.info("📝 Processing words...")
+            # word_stats = self._process_words(brief_id, chunks, chunk_ids)
+            # logger.info(f"✅ Processed {word_stats['total_words']} words")
             
             # Step 9: Extract phrases
             logger.info("🔤 Extracting legal phrases...")
@@ -124,8 +126,8 @@ class BriefIngestor:
                 'case_id': case_id,
                 'case_linked': case_id is not None,
                 'chunks_created': len(chunk_ids),
-                'sentences_processed': sentence_stats['total_sentences'],
-                'words_indexed': word_stats['total_words'],
+                'sentences_processed': 0,  # sentence_stats['total_sentences'],
+                'words_indexed': 0,  # word_stats['total_words'],
                 'phrases_extracted': phrase_stats['phrases_inserted'],
                 'toa_citations': toa_stats['citations_found'],
                 'embedding_dimension': len(brief_embedding) if brief_embedding else 0,
@@ -407,7 +409,7 @@ class BriefIngestor:
                             word_count, char_count, embedding
                         ) VALUES (
                             :brief_id, :case_id, :chunk_order, :text, :section,
-                            :word_count, :char_count, :embedding::vector
+                            :word_count, :char_count, CAST(:embedding AS vector)
                         )
                         RETURNING chunk_id
                     """)
@@ -480,7 +482,7 @@ class BriefIngestor:
                             INSERT INTO brief_sentences (
                                 brief_id, chunk_id, text, position, word_count, embedding
                             ) VALUES (
-                                :brief_id, :chunk_id, :text, :position, :word_count, :embedding::vector
+                                :brief_id, :chunk_id, :text, :position, :word_count, CAST(:embedding AS vector)
                             )
                         """)
                         
@@ -609,7 +611,7 @@ class BriefIngestor:
             
             update_query = text("""
                 UPDATE briefs
-                SET full_embedding = :embedding::vector
+                SET full_embedding = CAST(:embedding AS vector)
                 WHERE brief_id = :brief_id
             """)
             

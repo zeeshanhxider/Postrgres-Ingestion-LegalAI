@@ -11,12 +11,18 @@ from pathlib import Path
 from datetime import datetime
 from typing import List, Dict
 from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
 
-from app.database import Database
+from app.database import engine, SessionLocal
 from app.services.brief_ingestor import BriefIngestor
+from app.core.config import Settings
 
 # Configure logging
 logging.basicConfig(
@@ -43,8 +49,9 @@ class BriefBatchProcessor:
     
     def __init__(self, db_connection_string: str):
         """Initialize batch processor with database connection"""
-        self.db = Database(db_connection_string)
-        self.brief_ingestor = BriefIngestor(self.db.engine)
+        self.engine = create_engine(db_connection_string, echo=False)
+        self.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
+        self.brief_ingestor = BriefIngestor(self.engine)
         
         self.processed_count = 0
         self.failed_count = 0
@@ -178,7 +185,7 @@ class BriefBatchProcessor:
     
     def _is_already_processed(self, pdf_file: Path) -> bool:
         """Check if brief was already processed"""
-        with self.db.connect() as conn:
+        with self.engine.connect() as conn:
             from sqlalchemy import text
             
             query = text("""
