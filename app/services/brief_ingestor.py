@@ -216,8 +216,8 @@ class BriefIngestor:
             try:
                 folder_case_id = metadata['case_file_id']
                 
-                # Link to case via folder case_file_id
-                case_id = self._link_to_case(conn, folder_case_id)
+                # Link to case via folder case_file_id and get outcome data
+                case_id, outcome_data = self._link_to_case(conn, folder_case_id)
                 
                 # Extract summary (first 500 chars)
                 summary = full_text[:500] if full_text else None
@@ -226,12 +226,16 @@ class BriefIngestor:
                 insert_query = text("""
                     INSERT INTO briefs (
                         case_id, case_file_id,
-                        brief_type, filing_party, page_count, word_count,
+                        brief_type, filing_party, 
+                        winner_legal_role, winner_personal_role, appeal_outcome,
+                        page_count, word_count,
                         summary, full_text, source_file, source_file_path, year,
                         processing_status, extraction_timestamp
                     ) VALUES (
                         :case_id, :case_file_id,
-                        :brief_type, :filing_party, :page_count, :word_count,
+                        :brief_type, :filing_party,
+                        :winner_legal_role, :winner_personal_role, :appeal_outcome,
+                        :page_count, :word_count,
                         :summary, :full_text, :source_file, :source_file_path, :year,
                         'processing', NOW()
                     )
@@ -243,6 +247,9 @@ class BriefIngestor:
                     'case_file_id': folder_case_id,
                     'brief_type': metadata['brief_type'],
                     'filing_party': metadata['filing_party'],
+                    'winner_legal_role': outcome_data.get('winner_legal_role'),
+                    'winner_personal_role': outcome_data.get('winner_personal_role'),
+                    'appeal_outcome': outcome_data.get('appeal_outcome'),
                     'page_count': page_count,
                     'word_count': len(full_text.split()) if full_text else 0,
                     'summary': summary,
@@ -262,14 +269,17 @@ class BriefIngestor:
                 logger.error(f"Failed to insert brief: {str(e)}")
                 raise
     
-    def _link_to_case(self, conn, folder_case_id: str) -> Optional[int]:
+    def _link_to_case(self, conn, folder_case_id: str) -> Tuple[Optional[int], Dict[str, Optional[str]]]:
         """
-        Link brief to case via folder case_file_id (exact match)
+        Link brief to case via folder case_file_id (exact match) and fetch outcome data
         
-        Returns case_id or None if no match
+        Returns:
+            (case_id, outcome_data) - case_id is None if no match
+            outcome_data dict contains: winner_legal_role, winner_personal_role, appeal_outcome
         """
         query = text("""
-            SELECT case_id FROM cases
+            SELECT case_id, winner_legal_role, winner_personal_role, appeal_outcome
+            FROM cases
             WHERE case_file_id = :folder_case_id
             LIMIT 1
         """)
@@ -279,10 +289,15 @@ class BriefIngestor:
         
         if row:
             logger.info(f"✅ Linked via folder case_file_id: {folder_case_id}")
-            return row[0]
+            outcome_data = {
+                'winner_legal_role': row[1],
+                'winner_personal_role': row[2],
+                'appeal_outcome': row[3]
+            }
+            return row[0], outcome_data
         
         logger.warning(f"⚠️ No case match for folder '{folder_case_id}'")
-        return None
+        return None, {}
     
     def _detect_brief_chaining(self, brief_id: int, case_file_id: str, brief_type: str):
         """

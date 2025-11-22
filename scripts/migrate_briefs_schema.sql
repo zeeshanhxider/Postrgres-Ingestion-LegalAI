@@ -54,6 +54,11 @@ CREATE TABLE IF NOT EXISTS briefs (
     brief_type         CITEXT NOT NULL,
     filing_party       CITEXT NOT NULL,
     
+    -- Case outcome (denormalized from cases table)
+    winner_legal_role  CITEXT,
+    winner_personal_role CITEXT,
+    appeal_outcome     CITEXT,
+    
     -- Filename case ID extraction (multi-strategy linking)
     filename_case_id   CITEXT,
     filename_case_id_normalized CITEXT,
@@ -87,6 +92,9 @@ COMMENT ON TABLE briefs IS 'Legal briefs with multi-strategy case linking and co
 COMMENT ON COLUMN briefs.case_file_id_normalized IS 'Normalized folder case_file_id for fuzzy matching';
 COMMENT ON COLUMN briefs.filename_case_id IS 'Case ID extracted from filename suffix (e.g., "934" from "762508_appellants_reply_brief_934.pdf")';
 COMMENT ON COLUMN briefs.responds_to_brief_id IS 'Self-referential FK for brief chaining (Opening -> Response -> Reply)';
+COMMENT ON COLUMN briefs.winner_legal_role IS 'Denormalized from cases: Legal role of winning party (appellant/respondent)';
+COMMENT ON COLUMN briefs.winner_personal_role IS 'Denormalized from cases: Personal role of winning party';
+COMMENT ON COLUMN briefs.appeal_outcome IS 'Denormalized from cases: Final outcome of the appeal';
 
 -- Indexes
 CREATE INDEX idx_briefs_case_id ON briefs(case_id);
@@ -98,6 +106,8 @@ CREATE INDEX idx_briefs_responds_to ON briefs(responds_to_brief_id);
 CREATE INDEX idx_briefs_sequence ON briefs(case_file_id_normalized, brief_sequence);
 CREATE INDEX idx_briefs_brief_type ON briefs(brief_type);
 CREATE INDEX idx_briefs_filing_party ON briefs(filing_party);
+CREATE INDEX idx_briefs_appeal_outcome ON briefs(appeal_outcome);
+CREATE INDEX idx_briefs_winner_legal_role ON briefs(winner_legal_role);
 CREATE INDEX idx_briefs_year ON briefs(year);
 CREATE INDEX idx_briefs_sequence_id ON briefs(brief_sequence_id);
 CREATE INDEX idx_briefs_status ON briefs(processing_status);
