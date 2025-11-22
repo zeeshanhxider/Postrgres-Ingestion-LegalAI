@@ -145,13 +145,8 @@ class BriefIngestor:
         """
         Parse brief filename to extract metadata
         
-        Supports two patterns:
-        1. Legacy: "845012_Appellant_Reply.pdf"
-        2. New: "762508_appellants_reply_brief_934.pdf"
-        
         Returns metadata dict with:
         - case_file_id: From folder name (e.g., "83895-4")
-        - filename_case_id: From filename suffix (e.g., "934")
         - brief_type: Opening/Response/Reply
         - filing_party: Appellant/Respondent
         - source_file: Filename only
@@ -181,12 +176,6 @@ class BriefIngestor:
         # Parse filename for brief type and party
         filename_lower = filename.lower()
         
-        # Extract filename_case_id (suffix after last underscore if numeric)
-        filename_parts = filename.split('_')
-        filename_case_id = None
-        if len(filename_parts) > 1 and filename_parts[-1].isdigit():
-            filename_case_id = filename_parts[-1]
-        
         # Determine brief type
         if 'reply' in filename_lower:
             brief_type = 'Reply'
@@ -207,7 +196,6 @@ class BriefIngestor:
         
         return {
             'case_file_id': case_file_id,
-            'filename_case_id': filename_case_id,
             'brief_type': brief_type,
             'filing_party': filing_party,
             'source_file': path.name,
@@ -217,7 +205,7 @@ class BriefIngestor:
     
     def _insert_brief(self, metadata: Dict[str, str], full_text: str, page_count: int) -> Tuple[int, Optional[int]]:
         """
-        Insert brief record with multi-strategy case linking
+        Insert brief record with case linking via folder case_file_id
         
         Returns:
             (brief_id, case_id) - case_id is None if linking failed
@@ -226,12 +214,10 @@ class BriefIngestor:
             trans = conn.begin()
             
             try:
-                # Calculate normalized IDs
                 folder_case_id = metadata['case_file_id']
-                filename_case_id = metadata.get('filename_case_id')
                 
-                # Multi-strategy case linking
-                case_id = self._link_to_case(conn, folder_case_id, filename_case_id)
+                # Link to case via folder case_file_id
+                case_id = self._link_to_case(conn, folder_case_id)
                 
                 # Extract summary (first 500 chars)
                 summary = full_text[:500] if full_text else None
@@ -239,14 +225,12 @@ class BriefIngestor:
                 # Insert brief
                 insert_query = text("""
                     INSERT INTO briefs (
-                        case_id, case_file_id, case_file_id_normalized,
-                        filename_case_id, filename_case_id_normalized,
+                        case_id, case_file_id,
                         brief_type, filing_party, page_count, word_count,
                         summary, full_text, source_file, source_file_path, year,
                         processing_status, extraction_timestamp
                     ) VALUES (
-                        :case_id, :case_file_id, normalize_case_file_id(:case_file_id),
-                        :filename_case_id, normalize_case_file_id(:filename_case_id),
+                        :case_id, :case_file_id,
                         :brief_type, :filing_party, :page_count, :word_count,
                         :summary, :full_text, :source_file, :source_file_path, :year,
                         'processing', NOW()
@@ -257,7 +241,6 @@ class BriefIngestor:
                 result = conn.execute(insert_query, {
                     'case_id': case_id,
                     'case_file_id': folder_case_id,
-                    'filename_case_id': filename_case_id,
                     'brief_type': metadata['brief_type'],
                     'filing_party': metadata['filing_party'],
                     'page_count': page_count,
@@ -279,19 +262,15 @@ class BriefIngestor:
                 logger.error(f"Failed to insert brief: {str(e)}")
                 raise
     
-    def _link_to_case(self, conn, folder_case_id: str, filename_case_id: Optional[str]) -> Optional[int]:
+    def _link_to_case(self, conn, folder_case_id: str) -> Optional[int]:
         """
-        Multi-strategy case linking
-        
-        Strategy 1: Match folder case_file_id (normalized)
-        Strategy 2: Match filename case_id (normalized)
+        Link brief to case via folder case_file_id (exact match)
         
         Returns case_id or None if no match
         """
-        # Strategy 1: Try folder case_file_id
         query = text("""
             SELECT case_id FROM cases
-            WHERE normalize_case_file_id(case_file_id) = normalize_case_file_id(:folder_case_id)
+            WHERE case_file_id = :folder_case_id
             LIMIT 1
         """)
         
@@ -302,22 +281,7 @@ class BriefIngestor:
             logger.info(f"✅ Linked via folder case_file_id: {folder_case_id}")
             return row[0]
         
-        # Strategy 2: Try filename case_id
-        if filename_case_id:
-            query = text("""
-                SELECT case_id FROM cases
-                WHERE normalize_case_file_id(case_file_id) = normalize_case_file_id(:filename_case_id)
-                LIMIT 1
-            """)
-            
-            result = conn.execute(query, {'filename_case_id': filename_case_id})
-            row = result.fetchone()
-            
-            if row:
-                logger.info(f"✅ Linked via filename case_id: {filename_case_id}")
-                return row[0]
-        
-        logger.warning(f"⚠️ No case match for folder '{folder_case_id}' or filename '{filename_case_id}'")
+        logger.warning(f"⚠️ No case match for folder '{folder_case_id}'")
         return None
     
     def _detect_brief_chaining(self, brief_id: int, case_file_id: str, brief_type: str):

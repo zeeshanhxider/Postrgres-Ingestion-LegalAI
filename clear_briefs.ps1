@@ -5,12 +5,12 @@
 Write-Host "🗑️  Clearing briefs database..." -ForegroundColor Yellow
 Write-Host ""
 
-# Truncate briefs table (will cascade to all related tables)
-docker exec legal_ai_postgres psql -U postgres -d cases_llama3_3 -c "TRUNCATE briefs CASCADE;"
+# Truncate briefs table (will cascade to all related tables) and reset sequence
+docker exec legal_ai_postgres psql -U postgres -d cases_llama3_3 -c "TRUNCATE briefs CASCADE; ALTER SEQUENCE briefs_brief_id_seq RESTART WITH 1;"
 
 if ($LASTEXITCODE -eq 0) {
     Write-Host ""
-    Write-Host "✅ Briefs database cleared successfully!" -ForegroundColor Green
+    Write-Host "✅ Briefs database cleared and sequence reset!" -ForegroundColor Green
     Write-Host ""
     
     # Show confirmation
