@@ -188,3 +188,7 @@ Thumbs.db
 
 
 downloaded-briefs/
+
+# Database dumps
+*.dump
+batch_process_*.log
