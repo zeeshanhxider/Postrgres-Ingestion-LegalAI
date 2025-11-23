@@ -252,34 +252,32 @@ class BriefBatchProcessor:
         logger.info(f"{'='*80}\n")
     
     def _process_year_folder(self, year_folder: Path, year: int):
-        """Process all case folders in a year folder"""
+        """Process all case folders in a year folder with parallel processing across all PDFs"""
         case_folders = [item for item in year_folder.iterdir() if item.is_dir()]
         
         logger.info(f"📂 Found {len(case_folders)} case folders in {year_folder.name}")
         
-        for i, case_folder in enumerate(case_folders, 1):
-            logger.info(f"\n[{i}/{len(case_folders)}] Processing case folder: {case_folder.name}")
-            self._process_case_folder(case_folder, year)
-    
-    def _process_case_folder(self, case_folder: Path, year: int):
-        """Process all PDF files in a case folder with parallel processing"""
-        pdf_files = list(case_folder.glob("*.pdf"))
+        # Collect all PDF files from all case folders
+        all_pdf_files = []
+        for case_folder in case_folders:
+            pdf_files = list(case_folder.glob("*.pdf"))
+            all_pdf_files.extend([(pdf_file, year) for pdf_file in pdf_files])
         
-        if not pdf_files:
-            logger.info(f"⚠️ No PDF files found in {case_folder.name}")
-            with self.lock:
-                self.skipped_count += 1
+        if not all_pdf_files:
+            logger.info(f"⚠️ No PDF files found in {year_folder.name}")
             return
         
-        logger.info(f"📄 Found {len(pdf_files)} PDF files")
+        logger.info(f"📄 Found {len(all_pdf_files)} total PDF files across all case folders")
+        logger.info(f"⚡ Processing with {self.max_workers} parallel workers...")
         
-        # Process PDFs in parallel
+        # Process ALL PDFs in parallel across all case folders
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             futures = {
                 executor.submit(self._process_brief_file, pdf_file, year): pdf_file 
-                for pdf_file in pdf_files
+                for pdf_file, year in all_pdf_files
             }
             
+            # Wait for all to complete
             for future in as_completed(futures):
                 pdf_file = futures[future]
                 try:
@@ -386,7 +384,27 @@ def main():
         
         if case_path:
             logger.info(f"🎯 Processing single case folder: {args.case_folder}")
-            processor._process_case_folder(case_path, year)
+            
+            # Process PDFs in the single case folder
+            pdf_files = list(case_path.glob("*.pdf"))
+            if not pdf_files:
+                logger.error(f"❌ No PDF files found in {args.case_folder}")
+            else:
+                logger.info(f"📄 Found {len(pdf_files)} PDF files")
+                logger.info(f"⚡ Processing with {args.workers} parallel workers...")
+                
+                with ThreadPoolExecutor(max_workers=args.workers) as executor:
+                    futures = {
+                        executor.submit(processor._process_brief_file, pdf_file, year): pdf_file 
+                        for pdf_file in pdf_files
+                    }
+                    
+                    for future in as_completed(futures):
+                        pdf_file = futures[future]
+                        try:
+                            future.result()
+                        except Exception as e:
+                            logger.error(f"❌ Error processing {pdf_file.name}: {str(e)}")
             
             # Run post-processing to fix brief chaining
             if processor.processed_count > 0:
