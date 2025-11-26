@@ -37,6 +37,42 @@ Transformed the `document_types` table from a simple lookup table into a **"Traf
 
 ---
 
+## Key Concepts Explained
+
+### `has_decision` - Does this document declare a winner?
+
+| Value     | Meaning                                                                | Example                                                                  |
+| --------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| **TRUE**  | The document contains a court **ruling/judgment** - someone wins/loses | Appellate Opinion: _"We AFFIRM the trial court. Husband wins."_          |
+| **FALSE** | The document is just **asking** for something, no ruling yet           | Opening Brief: _"We ask the court to reverse..."_ - but no decision made |
+
+**Think of it like:**
+
+- `has_decision = TRUE` → **The referee made a call** (Opinion, Order, Judgment)
+- `has_decision = FALSE` → **Players arguing their case** (Briefs, Transcripts)
+
+### `is_adversarial` - Is this document biased/one-sided?
+
+| Value     | Meaning                                                   | Example                                                         |
+| --------- | --------------------------------------------------------- | --------------------------------------------------------------- |
+| **TRUE**  | Written by **one party** to argue their side - **biased** | Appellant's Brief: _"The trial court was WRONG because..."_     |
+| **FALSE** | **Neutral/objective** - not advocating for either side    | Appellate Opinion: _"After reviewing the evidence, we find..."_ |
+
+**Think of it like:**
+
+- `is_adversarial = TRUE` → **A lawyer arguing** - take it with a grain of salt
+- `is_adversarial = FALSE` → **A judge ruling** or **a transcript recording** - objective facts
+
+### Why This Matters for AI Processing
+
+| Document            | has_decision | is_adversarial | AI should...                                             |
+| ------------------- | ------------ | -------------- | -------------------------------------------------------- |
+| `appellate_opinion` | ✅ TRUE      | ❌ FALSE       | Extract the **outcome** (who won) - trust as **truth**   |
+| `opening_brief`     | ❌ FALSE     | ✅ TRUE        | Extract **arguments** - know this is **one side's spin** |
+| `transcript`        | ❌ FALSE     | ❌ FALSE       | Extract **facts** - neutral record of what happened      |
+
+---
+
 ## Schema Changes
 
 ### New Columns Added
