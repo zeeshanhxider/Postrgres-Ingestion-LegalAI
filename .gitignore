@@ -192,4 +192,6 @@ downloaded-briefs/
 *.dump
 batch_process_*.log
 
-output_csvs/
+output_csvs_briefs/
+scraped/
+urls/
