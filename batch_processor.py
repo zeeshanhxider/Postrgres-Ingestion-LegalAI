@@ -206,13 +206,17 @@ class BatchProcessor:
             metadata = {
                 'case_number': row_metadata.get('case_number', pdf_path.stem),
                 'title': row_metadata.get('case_title', pdf_path.stem.replace('_', ' ').title()),
-                'court_level': 'Supreme',  # Washington Supreme Court opinions
-                'division': 'N/A',  # Supreme Court doesn't have divisions
+                'court_level': row_metadata.get('opinion_type', 'Unknown'),  # From metadata
+                'division': 'N/A',  # Will be extracted from regex if available
                 'publication': publication,
                 'file_date': file_date,
                 'year': row_metadata.get('year'),
                 'month': row_metadata.get('month'),
                 'file_contains': file_contains,  # Majority, Concurring, Dissenting info
+                'opinion_type': row_metadata.get('opinion_type', ''),  # Supreme Court, Court of Appeals
+                'publication_status': row_metadata.get('publication_status', ''),  # Published, Published in Part
+                'case_info_url': row_metadata.get('case_info_url', ''),  # Link to case info
+                'pdf_url': row_metadata.get('pdf_url', ''),  # Link to PDF
             }
             
             # Prepare source file info with URLs

@@ -406,11 +406,25 @@ class DatabaseInserter:
         citation_id = result.fetchone().citation_id
         return citation_id
     
-    def _parse_date(self, date_str: Optional[str]) -> Optional[datetime]:
-        """Parse date string to datetime object"""
-        if not date_str:
+    def _parse_date(self, date_input) -> Optional[datetime]:
+        """Parse date string or datetime object to datetime object"""
+        if not date_input:
             return None
-            
+        
+        # If already a datetime, return as-is
+        if isinstance(date_input, datetime):
+            return date_input
+        
+        # If pandas Timestamp, convert to datetime
+        try:
+            import pandas as pd
+            if isinstance(date_input, pd.Timestamp):
+                return date_input.to_pydatetime()
+        except ImportError:
+            pass
+        
+        # Handle string input
+        date_str = str(date_input)
         try:
             # Try YYYY-MM-DD format first
             return datetime.strptime(date_str, '%Y-%m-%d')
@@ -510,9 +524,10 @@ class DatabaseInserter:
         
         Uses metadata DIRECTLY for:
         - case_number, case_title, file_date, pdf_url, case_info_url, file_contains
+        - opinion_type (maps to court_level), year, month
         
         Uses regex_result for EXTRACTED fields only:
-        - court_level, division, outcome, county
+        - division, outcome, county (court_level only if not in metadata)
         """
         
         # === METADATA FIELDS (always from CSV) ===
@@ -520,6 +535,18 @@ class DatabaseInserter:
         case_title = metadata.get('case_title', metadata.get('title', ''))
         pdf_url = metadata.get('pdf_url', '')
         case_info_url = metadata.get('case_info_url', '')
+        
+        # New metadata fields
+        opinion_type = metadata.get('opinion_type', '')
+        decision_year = metadata.get('year')
+        decision_month = metadata.get('month', '')
+        
+        # Convert year to integer if it's a string
+        if decision_year:
+            try:
+                decision_year = int(decision_year)
+            except (ValueError, TypeError):
+                decision_year = None
         
         # Parse file_date from metadata
         file_date = None
@@ -530,15 +557,23 @@ class DatabaseInserter:
         file_contains = str(metadata.get('file_contains', '')).lower()
         is_published = 'unpublished' not in file_contains
         
-        # === REGEX-EXTRACTED FIELDS (from PDF analysis) ===
-        # Map court_level string to enum value
-        court_level_map = {
-            'supreme_court': 'supreme_court',
-            'court_of_appeals': 'court_of_appeals',
-            'unknown': 'unknown'
-        }
-        court_level = court_level_map.get(regex_result.court_level, 'unknown')
+        # === COURT LEVEL: Use opinion_type from metadata (priority) or regex fallback ===
+        # Map opinion_type to court_level
+        opinion_type_lower = str(opinion_type).lower()
+        if 'supreme' in opinion_type_lower:
+            court_level = 'supreme_court'
+        elif 'court of appeals' in opinion_type_lower or 'appeals' in opinion_type_lower:
+            court_level = 'court_of_appeals'
+        else:
+            # Fallback to regex extraction
+            court_level_map = {
+                'supreme_court': 'supreme_court',
+                'court_of_appeals': 'court_of_appeals',
+                'unknown': 'unknown'
+            }
+            court_level = court_level_map.get(regex_result.court_level, 'unknown')
         
+        # === REGEX-EXTRACTED FIELDS (from PDF analysis) ===
         # Map division
         division_map = {
             'division_one': 'division_one',
@@ -565,14 +600,16 @@ class DatabaseInserter:
             INSERT INTO cases (
                 case_file_id, title, court_level, district, county,
                 docket_number, appeal_published_date,
-                published, source_url, overall_case_outcome, appeal_outcome,
+                published, source_url, case_info_url, overall_case_outcome, appeal_outcome,
+                opinion_type, publication_status, decision_year, decision_month,
                 case_type_id, stage_type_id, court_id,
                 source_file, source_file_path, extraction_timestamp,
                 created_at, updated_at
             ) VALUES (
                 :case_file_id, :title, :court_level, :district, :county,
                 :docket_number, :appeal_published_date,
-                :published, :source_url, :overall_case_outcome, :appeal_outcome,
+                :published, :source_url, :case_info_url, :overall_case_outcome, :appeal_outcome,
+                :opinion_type, :publication_status, :decision_year, :decision_month,
                 :case_type_id, :stage_type_id, :court_id,
                 :source_file, :source_file_path, :extraction_timestamp,
                 :created_at, :updated_at
@@ -586,15 +623,20 @@ class DatabaseInserter:
         result = conn.execute(query, {
             'case_file_id': case_number,           # FROM METADATA
             'title': case_title,                    # FROM METADATA  
-            'court_level': court_level,             # FROM REGEX
+            'court_level': court_level,             # FROM METADATA (opinion_type) or REGEX fallback
             'district': division,                   # FROM REGEX
             'county': county,                       # FROM REGEX
             'docket_number': case_number,           # FROM METADATA
             'appeal_published_date': file_date,     # FROM METADATA
             'published': is_published,              # FROM METADATA (file_contains)
             'source_url': pdf_url,                  # FROM METADATA
+            'case_info_url': case_info_url,         # FROM METADATA
             'overall_case_outcome': outcome,        # FROM REGEX
             'appeal_outcome': outcome,              # FROM REGEX
+            'opinion_type': opinion_type or None,   # FROM METADATA
+            'publication_status': metadata.get('publication_status') or None,  # FROM METADATA
+            'decision_year': decision_year,         # FROM METADATA
+            'decision_month': decision_month or None,  # FROM METADATA
             'case_type_id': dimension_ids.get('case_type_id'),
             'stage_type_id': dimension_ids.get('stage_type_id'),
             'court_id': dimension_ids.get('court_id'),
@@ -670,7 +712,7 @@ class DatabaseInserter:
             case_judge_query = text("""
                 INSERT INTO case_judges (case_id, judge_id, role)
                 VALUES (:case_id, :judge_id, :role)
-                ON CONFLICT (case_id, judge_id) DO NOTHING
+                ON CONFLICT (case_id, judge_id, role) DO NOTHING
             """)
             
             conn.execute(case_judge_query, {
@@ -681,36 +723,46 @@ class DatabaseInserter:
     
     def _insert_statute_citation(self, conn, statute, case_id: int) -> None:
         """Insert RCW statute citation"""
-        # First insert into statutes table (normalized)
+        # Parse RCW number into parts (e.g., "77.55.181" -> code=RCW, title=77, section=55.181)
+        rcw_parts = statute.rcw_number.split('.')
+        title_num = rcw_parts[0] if len(rcw_parts) > 0 else ''
+        section = '.'.join(rcw_parts[1:]) if len(rcw_parts) > 1 else ''
+        
+        # First insert into statutes_dim table (normalized)
         statute_query = text("""
-            INSERT INTO statutes (statute_number, jurisdiction, title)
-            VALUES (:statute_number, 'WA', :title)
-            ON CONFLICT (statute_number) DO UPDATE SET statute_number = EXCLUDED.statute_number
+            INSERT INTO statutes_dim (jurisdiction, code, title, section, subsection, display_text)
+            VALUES ('WA', 'RCW', :title, :section, '', :display_text)
+            ON CONFLICT (jurisdiction, code, title, section, COALESCE(subsection, '')) 
+            DO UPDATE SET display_text = EXCLUDED.display_text
             RETURNING statute_id
         """)
         
         result = conn.execute(statute_query, {
-            'statute_number': statute.rcw_number,
-            'title': statute.full_text
+            'title': title_num,
+            'section': section,
+            'display_text': statute.full_text
         })
         row = result.fetchone()
         
         if not row:
-            select_query = text("SELECT statute_id FROM statutes WHERE statute_number = :num")
-            result = conn.execute(select_query, {'num': statute.rcw_number})
+            select_query = text("""
+                SELECT statute_id FROM statutes_dim 
+                WHERE jurisdiction = 'WA' AND code = 'RCW' AND title = :title AND section = :section
+            """)
+            result = conn.execute(select_query, {'title': title_num, 'section': section})
             row = result.fetchone()
         
         if row:
             # Insert into statute_citations junction
             cite_query = text("""
-                INSERT INTO statute_citations (case_id, statute_id, citation_text)
-                VALUES (:case_id, :statute_id, :citation_text)
+                INSERT INTO statute_citations (case_id, statute_id, raw_text)
+                VALUES (:case_id, :statute_id, :raw_text)
                 ON CONFLICT DO NOTHING
             """)
             conn.execute(cite_query, {
                 'case_id': case_id,
                 'statute_id': row.statute_id,
-                'citation_text': statute.full_text
+                'raw_text': statute.full_text
             })
     
     def _insert_case_citation(self, conn, citation, case_id: int) -> None:
