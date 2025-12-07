@@ -15,11 +15,13 @@ logger = logging.getLogger(__name__)
 @dataclass
 class TextChunk:
     """Represents a chunk of text with metadata."""
-    order: int
+    chunk_index: int
     text: str
     word_count: int
     char_count: int
-    section: str = "CONTENT"
+    section_type: str = "CONTENT"
+    start_char: int = 0
+    end_char: int = 0
 
 
 class LegalTextChunker:
@@ -187,6 +189,8 @@ class LegalTextChunker:
         current_chunk_paras = []
         current_section = "CONTENT"
         chunk_order = 1
+        char_position = 0
+        chunk_start_char = 0
         
         for para_data in sectioned_paragraphs:
             para_text = para_data["text"]
@@ -194,14 +198,16 @@ class LegalTextChunker:
             
             # If section changes and we have content, finalize current chunk
             if para_section != current_section and current_chunk_paras:
-                chunk = self._finalize_chunk(current_chunk_paras, chunk_order, current_section)
+                chunk = self._finalize_chunk(current_chunk_paras, chunk_order, current_section, chunk_start_char)
                 if chunk:
                     chunks.append(chunk)
                     chunk_order += 1
                 current_chunk_paras = []
+                chunk_start_char = char_position
             
             current_section = para_section
             current_chunk_paras.append(para_text)
+            char_position += len(para_text) + 2  # +2 for \n\n between paragraphs
             
             # Check if current chunk is large enough
             current_word_count = sum(len(p.split()) for p in current_chunk_paras)
@@ -209,27 +215,28 @@ class LegalTextChunker:
             if current_word_count >= self.target_chunk_size:
                 if current_word_count > self.max_chunk_size:
                     # Split into multiple chunks
-                    sub_chunks = self._split_large_chunk(current_chunk_paras, chunk_order, current_section)
+                    sub_chunks = self._split_large_chunk(current_chunk_paras, chunk_order, current_section, chunk_start_char)
                     chunks.extend(sub_chunks)
                     chunk_order += len(sub_chunks)
                 else:
                     # Finalize at target size
-                    chunk = self._finalize_chunk(current_chunk_paras, chunk_order, current_section)
+                    chunk = self._finalize_chunk(current_chunk_paras, chunk_order, current_section, chunk_start_char)
                     if chunk:
                         chunks.append(chunk)
                         chunk_order += 1
                 
                 current_chunk_paras = []
+                chunk_start_char = char_position
         
         # Handle remaining paragraphs
         if current_chunk_paras:
-            chunk = self._finalize_chunk(current_chunk_paras, chunk_order, current_section)
+            chunk = self._finalize_chunk(current_chunk_paras, chunk_order, current_section, chunk_start_char)
             if chunk:
                 chunks.append(chunk)
         
         return chunks
     
-    def _finalize_chunk(self, paragraphs: List[str], order: int, section: str) -> Optional[TextChunk]:
+    def _finalize_chunk(self, paragraphs: List[str], order: int, section: str, start_char: int = 0) -> Optional[TextChunk]:
         """Create a TextChunk from paragraphs."""
         if not paragraphs:
             return None
@@ -242,33 +249,37 @@ class LegalTextChunker:
             return None
         
         return TextChunk(
-            order=order,
+            chunk_index=order,
             text=text,
             word_count=word_count,
             char_count=len(text),
-            section=section
+            section_type=section,
+            start_char=start_char,
+            end_char=start_char + len(text)
         )
     
-    def _split_large_chunk(self, paragraphs: List[str], start_order: int, section: str) -> List[TextChunk]:
+    def _split_large_chunk(self, paragraphs: List[str], start_order: int, section: str, start_char: int = 0) -> List[TextChunk]:
         """Split a large chunk into smaller ones."""
         chunks = []
         current_paras = []
         current_order = start_order
+        current_start_char = start_char
         
         for para in paragraphs:
             current_paras.append(para)
             word_count = sum(len(p.split()) for p in current_paras)
             
             if word_count >= self.target_chunk_size:
-                chunk = self._finalize_chunk(current_paras, current_order, section)
+                chunk = self._finalize_chunk(current_paras, current_order, section, current_start_char)
                 if chunk:
                     chunks.append(chunk)
+                    current_start_char = chunk.end_char + 2  # +2 for \n\n
                     current_order += 1
                 current_paras = []
         
         # Handle remaining
         if current_paras:
-            chunk = self._finalize_chunk(current_paras, current_order, section)
+            chunk = self._finalize_chunk(current_paras, current_order, section, current_start_char)
             if chunk:
                 chunks.append(chunk)
         

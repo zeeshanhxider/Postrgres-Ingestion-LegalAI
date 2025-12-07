@@ -34,9 +34,11 @@ class WordProcessor:
         'further', 'any', 'however', 'therefore', 'thus', 'hence', 'although'
     }
     
-    def __init__(self, db_engine: Engine):
+    def __init__(self, db_engine: Engine, batch_size: int = 50):
         self.db = db_engine
+        self.batch_size = batch_size
         self._word_cache: Dict[str, int] = {}  # word -> word_id cache
+        self._pending_occurrences: List[Dict] = []  # batch buffer
     
     def tokenize_text(self, text: str, remove_stop_words: bool = False) -> List[str]:
         """
@@ -287,3 +289,85 @@ class WordProcessor:
                 }
                 for row in result
             ]
+    
+    def process_sentence_words_simple(
+        self,
+        sentence_id: int,
+        sentence_text: str
+    ) -> int:
+        """
+        Simplified method to process a sentence's words.
+        Uses the stored db engine and batches operations.
+        
+        Args:
+            sentence_id: Sentence identifier
+            sentence_text: Sentence text content
+            
+        Returns:
+            Number of words processed
+        """
+        if not sentence_text:
+            return 0
+        
+        # Tokenize
+        tokens = self.tokenize_text(sentence_text, remove_stop_words=False)
+        
+        if not tokens:
+            return 0
+        
+        # Get unique words and create IDs
+        unique_words = list(set(tokens))
+        
+        with self.db.connect() as conn:
+            word_to_id = self.get_or_create_word_ids(conn, unique_words)
+            conn.commit()
+        
+        # Look up case_id and chunk_id from sentence
+        with self.db.connect() as conn:
+            result = conn.execute(text(
+                "SELECT case_id, chunk_id FROM case_sentences WHERE sentence_id = :sid"
+            ), {'sid': sentence_id})
+            row = result.fetchone()
+            if not row:
+                return 0
+            case_id, chunk_id = row[0], row[1]
+        
+        # Create word occurrences
+        for position, word in enumerate(tokens):
+            if word in word_to_id:
+                self._pending_occurrences.append({
+                    'word_id': word_to_id[word],
+                    'case_id': case_id,
+                    'chunk_id': chunk_id,
+                    'sentence_id': sentence_id,
+                    'document_id': None,
+                    'position': position
+                })
+        
+        # Flush if batch is full
+        if len(self._pending_occurrences) >= self.batch_size:
+            self.flush()
+        
+        return len(tokens)
+    
+    def flush(self):
+        """Flush pending word occurrences to database."""
+        if not self._pending_occurrences:
+            return
+        
+        with self.db.connect() as conn:
+            insert_query = text("""
+                INSERT INTO word_occurrence (word_id, case_id, chunk_id, sentence_id, document_id, position)
+                VALUES (:word_id, :case_id, :chunk_id, :sentence_id, :document_id, :position)
+                ON CONFLICT (word_id, sentence_id, position) DO NOTHING
+            """)
+            
+            for occ in self._pending_occurrences:
+                try:
+                    conn.execute(insert_query, occ)
+                except Exception:
+                    pass
+            
+            conn.commit()
+        
+        self._pending_occurrences = []

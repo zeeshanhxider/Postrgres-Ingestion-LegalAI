@@ -85,10 +85,9 @@ class SentenceProcessor:
     
     def process_chunk_sentences(
         self,
-        conn,
-        case_id: int,
         chunk_id: int,
         chunk_text: str,
+        case_id: Optional[int] = None,
         document_id: Optional[int] = None,
         global_sentence_counter: int = 0
     ) -> List[Dict[str, Any]]:
@@ -96,15 +95,14 @@ class SentenceProcessor:
         Process chunk into sentences and create database records.
         
         Args:
-            conn: Database connection (within transaction)
-            case_id: Case ID
             chunk_id: Chunk ID
             chunk_text: Text content
+            case_id: Optional Case ID (will be looked up from chunk if not provided)
             document_id: Optional document ID
             global_sentence_counter: Starting counter for global sentence order
             
         Returns:
-            List of created sentence records with IDs
+            List of created sentence records with IDs and text
         """
         # Split into sentences
         sentences = self.split_into_sentences(chunk_text)
@@ -114,49 +112,62 @@ class SentenceProcessor:
         
         sentence_records = []
         
-        for sentence_data in sentences:
-            global_sentence_counter += 1
+        with self.db.connect() as conn:
+            # Look up case_id from chunk if not provided
+            if case_id is None:
+                result = conn.execute(text(
+                    "SELECT case_id FROM case_chunks WHERE chunk_id = :chunk_id"
+                ), {'chunk_id': chunk_id})
+                row = result.fetchone()
+                if row:
+                    case_id = row[0]
             
-            try:
-                insert_query = text("""
-                    INSERT INTO case_sentences (
-                        case_id, chunk_id, document_id, sentence_order,
-                        global_sentence_order, text, word_count,
-                        created_at, updated_at
-                    ) VALUES (
-                        :case_id, :chunk_id, :document_id, :sentence_order,
-                        :global_sentence_order, :text, :word_count,
-                        NOW(), NOW()
-                    )
-                    RETURNING sentence_id
-                """)
+            for sentence_data in sentences:
+                global_sentence_counter += 1
                 
-                result = conn.execute(insert_query, {
-                    'case_id': case_id,
-                    'chunk_id': chunk_id,
-                    'document_id': document_id,
-                    'sentence_order': sentence_data['sentence_order'],
-                    'global_sentence_order': global_sentence_counter,
-                    'text': sentence_data['text'],
-                    'word_count': sentence_data['word_count']
-                })
-                
-                sentence_id = result.fetchone().sentence_id
-                
-                sentence_records.append({
-                    'sentence_id': sentence_id,
-                    'case_id': case_id,
-                    'chunk_id': chunk_id,
-                    'document_id': document_id,
-                    'sentence_order': sentence_data['sentence_order'],
-                    'global_sentence_order': global_sentence_counter,
-                    'text': sentence_data['text'],
-                    'word_count': sentence_data['word_count']
-                })
-                
-            except Exception as e:
-                logger.warning(f"Failed to insert sentence: {e}")
-                continue
+                try:
+                    insert_query = text("""
+                        INSERT INTO case_sentences (
+                            case_id, chunk_id, document_id, sentence_order,
+                            global_sentence_order, text, word_count,
+                            created_at, updated_at
+                        ) VALUES (
+                            :case_id, :chunk_id, :document_id, :sentence_order,
+                            :global_sentence_order, :text, :word_count,
+                            NOW(), NOW()
+                        )
+                        RETURNING sentence_id
+                    """)
+                    
+                    result = conn.execute(insert_query, {
+                        'case_id': case_id,
+                        'chunk_id': chunk_id,
+                        'document_id': document_id,
+                        'sentence_order': sentence_data['sentence_order'],
+                        'global_sentence_order': global_sentence_counter,
+                        'text': sentence_data['text'],
+                        'word_count': sentence_data['word_count']
+                    })
+                    
+                    sentence_id = result.fetchone()[0]
+                    
+                    sentence_records.append({
+                        'id': sentence_id,
+                        'text': sentence_data['text'],
+                        'sentence_id': sentence_id,
+                        'case_id': case_id,
+                        'chunk_id': chunk_id,
+                        'document_id': document_id,
+                        'sentence_order': sentence_data['sentence_order'],
+                        'global_sentence_order': global_sentence_counter,
+                        'word_count': sentence_data['word_count']
+                    })
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to insert sentence: {e}")
+                    continue
+            
+            conn.commit()
         
         return sentence_records
     

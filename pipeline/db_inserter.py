@@ -105,9 +105,9 @@ class DatabaseInserter:
         """
         from .rag_processor import create_rag_processor
         
-        pg_conn = self._get_psycopg2_connection()
+        # Use SQLAlchemy engine directly
         self._rag_processor = create_rag_processor(
-            pg_conn,
+            self.db,
             chunk_embedding_mode=chunk_embedding_mode,
             phrase_filter_mode=phrase_filter_mode
         )
@@ -189,8 +189,7 @@ class DatabaseInserter:
             # Lazy-load RAG processor with default settings
             if self._rag_processor is None:
                 from .rag_processor import create_rag_processor
-                pg_conn = self._get_psycopg2_connection()
-                self._rag_processor = create_rag_processor(pg_conn)
+                self._rag_processor = create_rag_processor(self.db)
             
             # Process the case
             result = self._rag_processor.process_case_sync(

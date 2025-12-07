@@ -153,18 +153,18 @@ def main():
         case = processor.process_case(str(source_path), metadata_row)
         
         if case.extraction_successful:
-            logger.info(f"✓ Extraction successful")
+            logger.info("[OK] Extraction successful")
             logger.info(f"  Summary: {case.summary[:200]}..." if case.summary else "")
             logger.info(f"  Parties: {len(case.parties)}, Judges: {len(case.judges)}, Issues: {len(case.issues)}")
             
             if inserter:
                 case_id = inserter.insert_case(case)
                 if case_id:
-                    logger.info(f"✓ Inserted as case_id: {case_id}")
+                    logger.info(f"[OK] Inserted as case_id: {case_id}")
                 else:
-                    logger.error("✗ Database insertion failed")
+                    logger.error("[FAIL] Database insertion failed")
         else:
-            logger.error(f"✗ Extraction failed: {case.error_message}")
+            logger.error(f"[FAIL] Extraction failed: {case.error_message}")
     
     elif source_path.is_dir():
         # Directory batch processing

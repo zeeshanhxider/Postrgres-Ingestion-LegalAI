@@ -5,14 +5,13 @@ Coordinates chunking, sentence processing, word indexing, phrase extraction,
 and embedding generation with configurable options.
 """
 import logging
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
 from enum import Enum
-import asyncio
 
-import psycopg2
-from psycopg2.extras import execute_values
-import httpx
+from sqlalchemy import text
+from sqlalchemy.engine import Engine
+import requests
 
 from .config import Config
 from .chunker import LegalTextChunker, TextChunk
@@ -66,7 +65,7 @@ class RAGProcessor:
     
     def __init__(
         self,
-        db_connection: psycopg2.extensions.connection,
+        db_engine: Engine,
         chunk_embedding_mode: ChunkEmbeddingMode = ChunkEmbeddingMode.ALL,
         phrase_filter_mode: PhraseFilterMode = PhraseFilterMode.STRICT,
         batch_size: int = 50,
@@ -76,13 +75,13 @@ class RAGProcessor:
         Initialize RAG processor.
         
         Args:
-            db_connection: Active database connection
+            db_engine: SQLAlchemy database engine
             chunk_embedding_mode: How to handle chunk embeddings
             phrase_filter_mode: Strictness of phrase filtering
             batch_size: Batch size for database inserts
             embedding_batch_size: Batch size for embedding API calls
         """
-        self.conn = db_connection
+        self.db = db_engine
         self.chunk_embedding_mode = chunk_embedding_mode
         self.phrase_filter_mode = phrase_filter_mode
         self.batch_size = batch_size
@@ -90,19 +89,20 @@ class RAGProcessor:
         
         # Initialize sub-processors
         self.chunker = LegalTextChunker()
-        self.sentence_processor = SentenceProcessor()
-        self.word_processor = WordProcessor(db_connection, batch_size=batch_size)
+        self.sentence_processor = SentenceProcessor(db_engine)
+        self.word_processor = WordProcessor(db_engine, batch_size=batch_size)
         self.phrase_extractor = PhraseExtractor(
+            db_engine=db_engine,
             strict_filtering=(phrase_filter_mode == PhraseFilterMode.STRICT)
         )
-        self.dimension_service = DimensionService(db_connection)
+        self.dimension_service = DimensionService(db_engine)
         
         logger.info(
             f"RAGProcessor initialized: chunk_embedding={chunk_embedding_mode.value}, "
             f"phrase_filter={phrase_filter_mode.value}"
         )
     
-    async def process_case(
+    def process_case(
         self,
         case_id: int,
         full_text: str,
@@ -130,34 +130,35 @@ class RAGProcessor:
             logger.info(f"Starting RAG processing for case {case_id}")
             
             # Step 1: Create chunks
-            chunks = self.chunker.create_chunks(full_text)
+            chunks = self.chunker.chunk_text(full_text)
             logger.info(f"Created {len(chunks)} chunks")
             
             # Step 2: Insert chunks and get IDs
-            chunk_ids = await self._insert_chunks(case_id, chunks)
+            chunk_ids = self._insert_chunks(case_id, chunks)
             chunks_created = len(chunk_ids)
             
             # Step 3: Generate chunk embeddings based on mode
             if self.chunk_embedding_mode != ChunkEmbeddingMode.NONE:
-                embeddings_generated = await self._generate_chunk_embeddings(
+                embeddings_generated = self._generate_chunk_embeddings(
                     chunks, chunk_ids
                 )
             
             # Step 4: Process sentences for each chunk
+            global_sentence_order = 0
             for chunk, chunk_id in zip(chunks, chunk_ids):
                 try:
-                    sentence_ids = self.sentence_processor.process_chunk_sentences(
-                        self.conn, chunk_id, chunk.text
+                    sentence_results = self.sentence_processor.process_chunk_sentences(
+                        chunk_id, chunk.text, case_id=case_id,
+                        global_sentence_counter=global_sentence_order
                     )
+                    sentence_ids = [s['id'] for s in sentence_results]
                     sentences_created += len(sentence_ids)
+                    global_sentence_order += len(sentence_ids)
                     
                     # Step 5: Process words for each sentence
-                    for sentence_id, sentence_text in zip(
-                        sentence_ids, 
-                        self.sentence_processor.split_into_sentences(chunk.text)
-                    ):
-                        word_count = self.word_processor.process_sentence_words(
-                            sentence_id, sentence_text
+                    for sentence_result in sentence_results:
+                        word_count = self.word_processor.process_sentence_words_simple(
+                            sentence_result['id'], sentence_result['text']
                         )
                         words_indexed += word_count
                         
@@ -170,16 +171,13 @@ class RAGProcessor:
             
             # Step 6: Extract phrases for the entire case
             try:
-                phrase_count = self.phrase_extractor.process_case_phrases(
-                    self.conn, case_id, full_text
+                phrase_count = self.phrase_extractor.process_case_phrases_from_text(
+                    case_id, full_text
                 )
                 phrases_extracted = phrase_count
             except Exception as e:
                 logger.error(f"Error extracting phrases: {e}")
                 errors.append(f"Phrase extraction: {str(e)}")
-            
-            # Commit all changes
-            self.conn.commit()
             
             logger.info(
                 f"RAG processing complete for case {case_id}: "
@@ -191,7 +189,6 @@ class RAGProcessor:
         except Exception as e:
             logger.error(f"RAG processing failed for case {case_id}: {e}")
             errors.append(f"Fatal: {str(e)}")
-            self.conn.rollback()
         
         return RAGProcessingResult(
             case_id=case_id,
@@ -203,149 +200,135 @@ class RAGProcessor:
             errors=errors
         )
     
-    async def _insert_chunks(
+    def _insert_chunks(
         self,
         case_id: int,
         chunks: List[TextChunk]
     ) -> List[int]:
         """Insert chunks into database and return their IDs."""
         chunk_ids = []
-        cursor = self.conn.cursor()
         
-        try:
+        with self.db.connect() as conn:
             for chunk in chunks:
-                cursor.execute("""
+                result = conn.execute(text("""
                     INSERT INTO case_chunks (
-                        case_id, chunk_index, chunk_text,
-                        section_type, start_char, end_char,
-                        word_count
+                        case_id, chunk_order, section, text
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    RETURNING id
-                """, (
-                    case_id,
-                    chunk.chunk_index,
-                    chunk.text,
-                    chunk.section_type,
-                    chunk.start_char,
-                    chunk.end_char,
-                    chunk.word_count
-                ))
-                chunk_ids.append(cursor.fetchone()[0])
+                    VALUES (:case_id, :chunk_order, :section, :text)
+                    RETURNING chunk_id
+                """), {
+                    'case_id': case_id,
+                    'chunk_order': chunk.chunk_index,
+                    'section': chunk.section_type,
+                    'text': chunk.text
+                })
+                chunk_ids.append(result.fetchone()[0])
             
-            logger.debug(f"Inserted {len(chunk_ids)} chunks for case {case_id}")
-            return chunk_ids
+            conn.commit()
             
-        except Exception as e:
-            logger.error(f"Error inserting chunks: {e}")
-            raise
-        finally:
-            cursor.close()
+        logger.debug(f"Inserted {len(chunk_ids)} chunks for case {case_id}")
+        return chunk_ids
     
-    async def _generate_chunk_embeddings(
+    def _generate_chunk_embeddings(
         self,
         chunks: List[TextChunk],
         chunk_ids: List[int]
     ) -> int:
         """Generate embeddings for chunks based on mode."""
         embeddings_generated = 0
-        cursor = self.conn.cursor()
         
-        try:
-            # Filter chunks based on mode
-            if self.chunk_embedding_mode == ChunkEmbeddingMode.IMPORTANT:
-                eligible = [
-                    (chunk, chunk_id) 
-                    for chunk, chunk_id in zip(chunks, chunk_ids)
-                    if chunk.section_type in self.IMPORTANT_SECTIONS
-                ]
-            else:  # ALL mode
-                eligible = list(zip(chunks, chunk_ids))
-            
-            if not eligible:
-                return 0
-            
-            logger.info(f"Generating embeddings for {len(eligible)} chunks")
-            
+        # Filter chunks based on mode
+        if self.chunk_embedding_mode == ChunkEmbeddingMode.IMPORTANT:
+            eligible = [
+                (chunk, chunk_id) 
+                for chunk, chunk_id in zip(chunks, chunk_ids)
+                if chunk.section_type in self.IMPORTANT_SECTIONS
+            ]
+        else:  # ALL mode
+            eligible = list(zip(chunks, chunk_ids))
+        
+        if not eligible:
+            return 0
+        
+        logger.info(f"Generating embeddings for {len(eligible)} chunks")
+        
+        with self.db.connect() as conn:
             # Process in batches
             for i in range(0, len(eligible), self.embedding_batch_size):
                 batch = eligible[i:i + self.embedding_batch_size]
                 
                 for chunk, chunk_id in batch:
                     try:
-                        embedding = await self._generate_embedding(chunk.text)
+                        embedding = self._generate_embedding_sync(chunk.text)
                         if embedding:
-                            cursor.execute("""
-                                UPDATE case_chunks
-                                SET chunk_embedding = %s
-                                WHERE id = %s
-                            """, (embedding, chunk_id))
+                            # Insert into embeddings table (not update case_chunks)
+                            conn.execute(text("""
+                                INSERT INTO embeddings (
+                                    case_id, chunk_id, text, embedding,
+                                    chunk_order, section
+                                )
+                                SELECT case_id, chunk_id, text, :embedding,
+                                       chunk_order, section
+                                FROM case_chunks WHERE chunk_id = :chunk_id
+                            """), {'embedding': embedding, 'chunk_id': chunk_id})
                             embeddings_generated += 1
                     except Exception as e:
                         logger.warning(f"Failed to generate embedding for chunk {chunk_id}: {e}")
             
-            return embeddings_generated
-            
-        finally:
-            cursor.close()
+            conn.commit()
+        
+        return embeddings_generated
     
-    async def _generate_embedding(self, text: str) -> Optional[List[float]]:
-        """Generate embedding for text using Ollama."""
+    def _generate_embedding_sync(self, text_content: str) -> Optional[List[float]]:
+        """Generate embedding for text using Ollama (synchronous)."""
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post(
-                    f"{Config.OLLAMA_BASE_URL}/api/embeddings",
-                    json={
-                        "model": Config.OLLAMA_EMBEDDING_MODEL,
-                        "prompt": text[:8000]  # Truncate if too long
-                    }
-                )
-                response.raise_for_status()
-                result = response.json()
-                return result.get("embedding")
+            response = requests.post(
+                f"{Config.OLLAMA_BASE_URL}/api/embeddings",
+                json={
+                    "model": Config.OLLAMA_EMBEDDING_MODEL,
+                    "prompt": text_content[:8000]  # Truncate if too long
+                },
+                timeout=60
+            )
+            response.raise_for_status()
+            result = response.json()
+            return result.get("embedding")
         except Exception as e:
             logger.error(f"Embedding generation failed: {e}")
             return None
-
-
-class SyncRAGProcessor(RAGProcessor):
-    """
-    Synchronous wrapper for RAGProcessor.
     
-    Use this when calling from non-async contexts.
-    """
-    
+    # Alias for backward compatibility
     def process_case_sync(
         self,
         case_id: int,
         full_text: str,
         metadata: Optional[Dict[str, Any]] = None
     ) -> RAGProcessingResult:
-        """Synchronous version of process_case."""
-        return asyncio.run(self.process_case(case_id, full_text, metadata))
-    
-    def generate_embedding_sync(self, text: str) -> Optional[List[float]]:
-        """Synchronous version of embedding generation."""
-        return asyncio.run(self._generate_embedding(text))
+        """Synchronous version of process_case (same as process_case now)."""
+        return self.process_case(case_id, full_text, metadata)
+
+
+# Alias for backward compatibility
+SyncRAGProcessor = RAGProcessor
 
 
 def create_rag_processor(
-    db_connection: psycopg2.extensions.connection,
+    db_engine: Engine,
     chunk_embedding_mode: str = "all",
     phrase_filter_mode: str = "strict",
     batch_size: int = 50
-) -> SyncRAGProcessor:
+) -> RAGProcessor:
     """
     Factory function to create RAG processor with string arguments.
     
     Args:
-        db_connection: Active database connection
+        db_engine: SQLAlchemy database engine
         chunk_embedding_mode: "all", "important", or "none"
         phrase_filter_mode: "strict" or "relaxed"
         batch_size: Batch size for database operations
         
     Returns:
-        Configured SyncRAGProcessor instance
+        Configured RAGProcessor instance
     """
     # Convert string to enum
     try:
@@ -360,8 +343,8 @@ def create_rag_processor(
         logger.warning(f"Invalid phrase_filter_mode '{phrase_filter_mode}', using 'strict'")
         filter_mode = PhraseFilterMode.STRICT
     
-    return SyncRAGProcessor(
-        db_connection=db_connection,
+    return RAGProcessor(
+        db_engine=db_engine,
         chunk_embedding_mode=embedding_mode,
         phrase_filter_mode=filter_mode,
         batch_size=batch_size

@@ -73,9 +73,13 @@ class PhraseExtractor:
         'be the', 'been the', 'being the', 'as the', 'but the'
     }
     
-    def __init__(self, db_engine: Engine):
+    def __init__(self, db_engine: Engine = None, strict_filtering: bool = True):
         self.db = db_engine
-        self.word_processor = WordProcessor(db_engine)
+        self.strict_filtering = strict_filtering
+        if db_engine:
+            self.word_processor = WordProcessor(db_engine)
+        else:
+            self.word_processor = None
     
     def extract_ngrams(
         self, 
@@ -285,6 +289,92 @@ class PhraseExtractor:
             except Exception as e:
                 logger.warning(f"Failed to insert phrase '{phrase}': {e}")
         
+        return inserted
+    
+    def process_case_phrases_from_text(
+        self,
+        case_id: int,
+        full_text: str,
+        document_id: Optional[int] = None
+    ) -> int:
+        """
+        Process full case text to extract and index phrases.
+        Simplified method that doesn't require pre-chunked data.
+        
+        Args:
+            case_id: Case identifier
+            full_text: Full text content
+            document_id: Optional document identifier
+            
+        Returns:
+            Number of phrases inserted
+        """
+        if not full_text or not self.word_processor:
+            return 0
+        
+        # Tokenize the full text
+        tokens = self.word_processor.tokenize_text(full_text, remove_stop_words=False)
+        
+        if len(tokens) < 2:
+            return 0
+        
+        all_phrases: Dict[str, int] = {}
+        
+        # Extract n-grams for different sizes
+        for n in [2, 3, 4]:
+            ngrams = self.extract_ngrams(tokens, n, min_frequency=1)
+            
+            for phrase, freq in ngrams.items():
+                if self.strict_filtering:
+                    if not self.is_legal_phrase(phrase):
+                        continue
+                
+                if phrase not in all_phrases:
+                    all_phrases[phrase] = 0
+                all_phrases[phrase] += freq
+        
+        # Filter based on settings
+        if self.strict_filtering:
+            filtered = {
+                p: f for p, f in all_phrases.items()
+                if f >= 2 or self.is_high_value_phrase(p)
+            }
+        else:
+            filtered = {p: f for p, f in all_phrases.items() if f >= 2}
+        
+        # Insert into database
+        if not filtered:
+            return 0
+        
+        with self.db.connect() as conn:
+            insert_query = text("""
+                INSERT INTO case_phrases (case_id, document_id, phrase, n, frequency, created_at)
+                VALUES (:case_id, :document_id, :phrase, :n, :frequency, NOW())
+                ON CONFLICT (case_id, phrase) DO UPDATE SET 
+                    frequency = EXCLUDED.frequency
+            """)
+            
+            inserted = 0
+            for phrase, frequency in filtered.items():
+                n = len(phrase.split())
+                if n not in [2, 3, 4]:
+                    continue
+                
+                try:
+                    conn.execute(insert_query, {
+                        'case_id': case_id,
+                        'document_id': document_id,
+                        'phrase': phrase,
+                        'n': n,
+                        'frequency': frequency
+                    })
+                    inserted += 1
+                except Exception as e:
+                    logger.warning(f"Failed to insert phrase '{phrase}': {e}")
+            
+            conn.commit()
+        
+        logger.debug(f"Extracted {len(all_phrases)} phrases, inserted {inserted} for case {case_id}")
         return inserted
     
     def search_phrases(self, query: str, case_id: Optional[int] = None, limit: int = 50) -> List[Dict]:
