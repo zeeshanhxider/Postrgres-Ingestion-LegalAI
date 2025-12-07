@@ -110,6 +110,39 @@ class LLMExtractor:
         
         logger.info(f"LLM Extractor initialized with model: {self.model}")
     
+    def _strip_slip_opinion_notice(self, text: str) -> str:
+        """
+        Remove the standard "NOTICE: SLIP OPINION" cover page that appears
+        at the start of many Washington State court PDFs.
+        
+        This page is boilerplate and adds noise for LLM extraction.
+        """
+        import re
+        
+        original_len = len(text)
+        
+        # Check if text starts with the slip opinion notice
+        if 'NOTICE: SLIP OPINION' in text[:500] or 'NOTICE:  SLIP OPINION' in text[:500]:
+            # Find where the actual court content starts
+            # Look for "IN THE COURT OF APPEALS" or "IN THE SUPREME COURT" patterns
+            court_match = re.search(
+                r'\n\s*(FILED\s*\n.*?)?IN THE (?:SUPREME )?COURT',
+                text,
+                re.DOTALL | re.IGNORECASE
+            )
+            if court_match:
+                text = text[court_match.start():].lstrip()
+                logger.debug(f"Stripped slip opinion notice: {original_len - len(text)} chars removed")
+        
+        # Remove repeated "For the current opinion" lines throughout the document
+        text = re.sub(
+            r'For the current opinion, go to https://www\.lexisnexis\.com/clients/wareports/\.\s*\n?',
+            '',
+            text
+        )
+        
+        return text
+    
     def extract(self, text: str, max_chars: int = 30000) -> Dict[str, Any]:
         """
         Extract structured data from case text using LLM.
@@ -121,6 +154,9 @@ class LLMExtractor:
         Returns:
             Dictionary with extracted data
         """
+        # Strip the "NOTICE: SLIP OPINION" cover page if present
+        text = self._strip_slip_opinion_notice(text)
+        
         # Truncate text if too long (keep beginning and end for context)
         if len(text) > max_chars:
             half = max_chars // 2
