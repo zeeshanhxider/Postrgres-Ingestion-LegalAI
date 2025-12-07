@@ -242,7 +242,7 @@ class DatabaseInserter:
             INSERT INTO cases (
                 case_file_id, title, court_level, court, district, county,
                 docket_number, source_docket_number, trial_judge,
-                appeal_published_date, published,
+                appeal_published_date, oral_argument_date, published,
                 summary, full_text, full_embedding,
                 source_url, case_info_url,
                 overall_case_outcome, appeal_outcome,
@@ -256,7 +256,7 @@ class DatabaseInserter:
             ) VALUES (
                 :case_file_id, :title, :court_level, :court, :district, :county,
                 :docket_number, :source_docket_number, :trial_judge,
-                :appeal_published_date, :published,
+                :appeal_published_date, :oral_argument_date, :published,
                 :summary, :full_text, :full_embedding,
                 :source_url, :case_info_url,
                 :overall_case_outcome, :appeal_outcome,
@@ -299,7 +299,8 @@ class DatabaseInserter:
             'docket_number': docket,
             'source_docket_number': case.source_docket_number,
             'trial_judge': case.trial_judge,
-            'appeal_published_date': meta.file_date,
+            'appeal_published_date': case.opinion_filed_date or meta.file_date,
+            'oral_argument_date': case.oral_argument_date,
             'published': published,
             'summary': case.summary or None,
             'full_text': case.full_text,

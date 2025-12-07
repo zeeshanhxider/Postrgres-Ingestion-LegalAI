@@ -77,6 +77,10 @@ Extract this JSON structure:
                 "ruling": "How the court answered (e.g., 'Yes, the owner's consent overrode the borrower's objection.')"
             }}
         ]
+    }},
+    "procedural_dates": {{
+        "oral_argument_date": "Date oral argument was held (e.g., '2024-01-10' or null if not mentioned)",
+        "opinion_filed_date": "Date this opinion was filed, usually in the header (e.g., '2024-01-16' or null if not clear)"
     }}
 }}"""
 
@@ -178,6 +182,29 @@ class LLMExtractor:
         
         result = response.json()
         return result.get("response", "")
+    
+    def _parse_date(self, date_str: Optional[str]):
+        """
+        Parse a date string from LLM output into a date object.
+        Handles various formats like '2024-01-16', 'January 16, 2024', '1/16/2024'.
+        
+        Args:
+            date_str: Date string from LLM or None
+            
+        Returns:
+            date object or None if parsing fails
+        """
+        from datetime import date
+        from dateutil import parser as date_parser
+        
+        if not date_str or date_str.lower() in ('null', 'none', 'n/a', 'not mentioned', 'not specified'):
+            return None
+        
+        try:
+            parsed = date_parser.parse(date_str)
+            return parsed.date()
+        except Exception:
+            return None
     
     def _parse_json_response(self, response: str) -> Dict[str, Any]:
         """
@@ -447,6 +474,12 @@ class LLMExtractor:
                     if isinstance(statute, str):
                         llm_result["statutes"].append({"citation": statute})
         
+        # procedural_dates -> date fields
+        if "procedural_dates" in llm_result and isinstance(llm_result["procedural_dates"], dict):
+            dates = llm_result["procedural_dates"]
+            llm_result["oral_argument_date"] = dates.get("oral_argument_date")
+            llm_result["opinion_filed_date"] = dates.get("opinion_filed_date")
+        
         # Simple fields
         case.summary = llm_result.get("summary", "")
         case.case_type = llm_result.get("case_type", "")
@@ -458,6 +491,10 @@ class LLMExtractor:
         case.outcome_detail = llm_result.get("outcome_detail")
         case.winner_legal_role = llm_result.get("winner_legal_role")
         case.winner_personal_role = llm_result.get("winner_personal_role")
+        
+        # Parse procedural dates
+        case.oral_argument_date = self._parse_date(llm_result.get("oral_argument_date"))
+        case.opinion_filed_date = self._parse_date(llm_result.get("opinion_filed_date"))
         
         # Parties (handles both old and new schema field names)
         for p in llm_result.get("parties", []):

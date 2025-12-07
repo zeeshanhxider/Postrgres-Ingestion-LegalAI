@@ -109,6 +109,10 @@ class ExtractedCase:
     winner_legal_role: Optional[str] = None     # "Plaintiff", "Defendant", "Appellant", "Respondent"
     winner_personal_role: Optional[str] = None  # "Employee", "Employer", "Landlord", etc.
     
+    # Procedural dates (extracted from PDF)
+    oral_argument_date: Optional[date] = None         # Date oral argument was held
+    opinion_filed_date: Optional[date] = None         # Date opinion was filed (from header)
+    
     # Entities (all from LLM)
     parties: List[Party] = field(default_factory=list)
     attorneys: List[Attorney] = field(default_factory=list)
