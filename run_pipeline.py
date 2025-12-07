@@ -79,6 +79,23 @@ def main():
         action='store_true',
         help='Skip RAG processing (chunks, sentences, words, phrases)'
     )
+    parser.add_argument(
+        '--workers',
+        type=int,
+        default=4,
+        help='Number of parallel workers for batch processing (default: 4)'
+    )
+    parser.add_argument(
+        '--sequential',
+        action='store_true',
+        help='Disable parallel processing (process files one at a time)'
+    )
+    parser.add_argument(
+        '--pdf-extractor',
+        choices=['llamaparse', 'pdfplumber', 'auto'],
+        default='pdfplumber',
+        help='PDF extraction method: llamaparse (cloud OCR), pdfplumber (local, faster), auto (try llamaparse, fallback to pdfplumber). Default: pdfplumber'
+    )
     
     args = parser.parse_args()
     
@@ -97,10 +114,11 @@ def main():
     logger.info(f"Metadata: {args.metadata or 'None'}")
     logger.info(f"Limit: {args.limit or 'None'}")
     logger.info(f"Model: {config.ollama_model}")
+    logger.info(f"PDF Extractor: {args.pdf_extractor}")
     logger.info(f"Database: {'Disabled' if args.no_db else 'Enabled'}")
     
     # Initialize components
-    pdf_extractor = PDFExtractor(config.llama_cloud_api_key)
+    pdf_extractor = PDFExtractor(config.llama_cloud_api_key, mode=args.pdf_extractor)
     llm_extractor = LLMExtractor(
         model=config.ollama_model,
         base_url=config.ollama_base_url,
@@ -112,7 +130,7 @@ def main():
         logger.error("Failed to connect to Ollama. Is it running?")
         sys.exit(1)
     
-    processor = CaseProcessor(pdf_extractor, llm_extractor)
+    processor = CaseProcessor(pdf_extractor, llm_extractor, max_workers=args.workers)
     
     # Initialize database inserter if needed
     inserter = None
@@ -169,11 +187,13 @@ def main():
     elif source_path.is_dir():
         # Directory batch processing
         logger.info(f"\nBatch processing directory: {source_path}")
+        logger.info(f"Parallel: {'No (sequential)' if args.sequential else f'Yes ({args.workers} workers)'}")
         
         cases = processor.process_batch(
             str(source_path),
             metadata_csv=args.metadata,
-            limit=args.limit
+            limit=args.limit,
+            parallel=not args.sequential
         )
         
         # Insert into database

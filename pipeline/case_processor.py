@@ -6,15 +6,20 @@ Combines metadata (CSV) + PDF extraction + LLM extraction
 import csv
 import logging
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 from datetime import datetime
 from dateutil import parser as date_parser
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 from .models import CaseMetadata, ExtractedCase
 from .pdf_extractor import PDFExtractor
 from .llm_extractor import LLMExtractor
 
 logger = logging.getLogger(__name__)
+
+# Thread-local storage for per-thread extractors
+_thread_local = threading.local()
 
 
 class CaseProcessor:
@@ -31,7 +36,8 @@ class CaseProcessor:
     def __init__(
         self,
         pdf_extractor: Optional[PDFExtractor] = None,
-        llm_extractor: Optional[LLMExtractor] = None
+        llm_extractor: Optional[LLMExtractor] = None,
+        max_workers: int = 4
     ):
         """
         Initialize the case processor.
@@ -39,9 +45,11 @@ class CaseProcessor:
         Args:
             pdf_extractor: PDFExtractor instance (created if not provided)
             llm_extractor: LLMExtractor instance (created if not provided)
+            max_workers: Number of parallel workers for batch processing
         """
         self.pdf_extractor = pdf_extractor or PDFExtractor()
         self.llm_extractor = llm_extractor or LLMExtractor()
+        self.max_workers = max_workers
     
     def load_metadata_csv(self, csv_path: str) -> Dict[str, Dict[str, Any]]:
         """
@@ -211,15 +219,17 @@ class CaseProcessor:
         self,
         pdf_dir: str,
         metadata_csv: Optional[str] = None,
-        limit: Optional[int] = None
+        limit: Optional[int] = None,
+        parallel: bool = True
     ) -> List[ExtractedCase]:
         """
-        Process a batch of PDF files.
+        Process a batch of PDF files (with optional parallel processing).
         
         Args:
             pdf_dir: Directory containing PDF files
             metadata_csv: Path to metadata CSV (optional)
             limit: Maximum number of files to process
+            parallel: Use parallel processing (default True)
             
         Returns:
             List of ExtractedCase objects
@@ -239,31 +249,94 @@ class CaseProcessor:
         
         logger.info(f"Processing {len(pdf_files)} PDF files from {pdf_dir}")
         
-        results = []
-        for i, pdf_path in enumerate(pdf_files, 1):
-            logger.info(f"\n[{i}/{len(pdf_files)}] Processing: {pdf_path.name}")
-            
-            # Try to find matching metadata
+        # Build list of (pdf_path, metadata_row) tuples
+        tasks: List[Tuple[Path, Optional[Dict]]] = []
+        for pdf_path in pdf_files:
             metadata_row = None
             if metadata_map:
-                # Try to match by filename or case number
                 for case_num, row in metadata_map.items():
                     if case_num in pdf_path.name or row.get('pdf_filename', '') == pdf_path.name:
                         metadata_row = row
                         break
-            
-            # Process the case
+            tasks.append((pdf_path, metadata_row))
+        
+        if parallel and len(tasks) > 1:
+            return self._process_batch_parallel(tasks)
+        else:
+            return self._process_batch_sequential(tasks)
+    
+    def _process_batch_sequential(self, tasks: List[Tuple[Path, Optional[Dict]]]) -> List[ExtractedCase]:
+        """Process tasks sequentially."""
+        results = []
+        total = len(tasks)
+        
+        for i, (pdf_path, metadata_row) in enumerate(tasks, 1):
+            logger.info(f"\n[{i}/{total}] Processing: {pdf_path.name}")
             case = self.process_case(str(pdf_path), metadata_row)
             results.append(case)
             
-            # Log progress
             if case.extraction_successful:
-                logger.info(f"  ✓ Success")
+                logger.info(f"  [OK] Success")
             else:
-                logger.warning(f"  ✗ Failed: {case.error_message}")
+                logger.warning(f"  [FAIL] {case.error_message}")
         
-        # Summary
         successful = sum(1 for c in results if c.extraction_successful)
         logger.info(f"\nBatch complete: {successful}/{len(results)} successful")
-        
         return results
+    
+    def _process_batch_parallel(self, tasks: List[Tuple[Path, Optional[Dict]]]) -> List[ExtractedCase]:
+        """Process tasks in parallel using ThreadPoolExecutor."""
+        results = []
+        total = len(tasks)
+        counter = {'completed': 0}  # Use dict for mutable counter
+        lock = threading.Lock()
+        
+        logger.info(f"Using {self.max_workers} parallel workers")
+        
+        def process_task(task_info: Tuple[int, Path, Optional[Dict]]) -> Tuple[int, ExtractedCase]:
+            """Worker function to process a single case."""
+            idx, pdf_path, metadata_row = task_info
+            case = self.process_case(str(pdf_path), metadata_row)
+            return (idx, case)
+        
+        # Create indexed tasks
+        indexed_tasks = [(i, pdf_path, metadata_row) for i, (pdf_path, metadata_row) in enumerate(tasks)]
+        
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            # Submit all tasks
+            futures = {executor.submit(process_task, task): task for task in indexed_tasks}
+            
+            # Collect results as they complete
+            for future in as_completed(futures):
+                task = futures[future]
+                idx, pdf_path, _ = task
+                
+                try:
+                    result_idx, case = future.result()
+                    results.append((result_idx, case))
+                    
+                    with lock:
+                        counter['completed'] += 1
+                        status = "[OK]" if case.extraction_successful else "[FAIL]"
+                        logger.info(f"[{counter['completed']}/{total}] {status} {pdf_path.name}")
+                        
+                except Exception as e:
+                    with lock:
+                        counter['completed'] += 1
+                        logger.error(f"[{counter['completed']}/{total}] [ERROR] {pdf_path.name}: {e}")
+                    
+                    # Create failed case
+                    case = ExtractedCase()
+                    case.extraction_successful = False
+                    case.error_message = str(e)
+                    case.source_file_path = str(pdf_path)
+                    results.append((idx, case))
+        
+        # Sort by original order and extract cases
+        results.sort(key=lambda x: x[0])
+        ordered_cases = [case for _, case in results]
+        
+        successful = sum(1 for c in ordered_cases if c.extraction_successful)
+        logger.info(f"\nBatch complete: {successful}/{len(ordered_cases)} successful")
+        
+        return ordered_cases
