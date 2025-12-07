@@ -4,6 +4,8 @@ Reliable AI extraction using proven approaches that work with Ollama and OpenAI.
 
 Enhanced with detailed logging for debugging.
 HYBRID APPROACH: Regex pre-extraction + AI for complex fields
+
+This module now contains ALL regex extraction logic (consolidated from regex_extractor.py).
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ import logging
 import time
 import traceback
 import re
+from dataclasses import dataclass, field
 
 from dotenv import load_dotenv
 from langchain_core.prompts import ChatPromptTemplate
@@ -27,6 +30,72 @@ from .prompts import SYSTEM_PROMPT, HUMAN_TEMPLATE
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# DATACLASSES FOR EXTRACTION RESULTS
+# =============================================================================
+
+@dataclass
+class ExtractedJudge:
+    """Extracted judge information"""
+    name: str
+    role: str  # 'author', 'concurring', 'dissenting', 'pro_tempore'
+
+
+@dataclass
+class ExtractedCitation:
+    """Extracted case citation"""
+    volume: str
+    reporter: str  # 'Wn.2d', 'Wn. App.', 'Wn. App. 2d'
+    page: str
+    full_citation: str
+
+
+@dataclass
+class ExtractedStatute:
+    """Extracted RCW statute citation"""
+    rcw_number: str
+    full_text: str
+
+
+@dataclass
+class ExtractedParty:
+    """Extracted party information"""
+    name: str
+    role: str  # 'appellant', 'respondent', 'petitioner', 'cross_appellant', etc.
+
+
+@dataclass
+class RegexExtractionResult:
+    """
+    Comprehensive result from regex-based PDF extraction.
+    Contains all fields extracted via regex from PDF text.
+    """
+    # Court info
+    court_level: str = ""  # 'Supreme', 'Appeals', 'Unknown'
+    division: Optional[str] = None  # 'Division I', 'Division II', 'Division III'
+    publication_status: str = "Published"
+    
+    # Case identifiers
+    case_file_id: Optional[str] = None
+    case_type: str = "civil"
+    
+    # Outcome
+    appeal_outcome: Optional[str] = None  # 'affirmed', 'reversed', 'remanded', 'dismissed'
+    outcome_detail: Optional[str] = None  # 'affirmed in part', 'reversed and remanded'
+    
+    # Extracted entities
+    judges: List[ExtractedJudge] = field(default_factory=list)
+    parties: List[ExtractedParty] = field(default_factory=list)
+    citations: List[ExtractedCitation] = field(default_factory=list)
+    statutes: List[ExtractedStatute] = field(default_factory=list)
+    
+    # Location
+    county: Optional[str] = None
+    
+    # Flags
+    en_banc: bool = False
 
 
 # =============================================================================
@@ -375,11 +444,169 @@ def extract_county_regex(text: str) -> Optional[str]:
     return None
 
 
+def extract_citations_regex(text: str) -> List[ExtractedCitation]:
+    """
+    Extract Washington State case citations using regex.
+    Patterns: 123 Wn.2d 456, 123 Wn. App. 456, 123 Wn. App. 2d 456
+    """
+    citations = []
+    seen = set()
+    
+    # Washington citations: 123 Wn.2d 456, 123 Wn. App. 456, etc.
+    wa_citation_pattern = re.compile(
+        r'(\d{1,3})\s+(Wn\.?\s*(?:App\.?\s*)?2d|Wn\.?\s*App\.?|Wash\.?\s*2d|Wash\.?)\s+(\d{1,4})'
+    )
+    
+    for match in wa_citation_pattern.finditer(text):
+        volume, reporter, page = match.groups()
+        # Normalize reporter format
+        reporter_norm = reporter.replace(' ', '').replace('.', '')
+        if 'App2d' in reporter_norm:
+            reporter_clean = 'Wn. App. 2d'
+        elif 'App' in reporter_norm:
+            reporter_clean = 'Wn. App.'
+        elif 'Wn2d' in reporter_norm or 'Wash2d' in reporter_norm:
+            reporter_clean = 'Wn.2d'
+        elif 'Wash' in reporter_norm:
+            reporter_clean = 'Wash.'
+        else:
+            reporter_clean = 'Wn.2d'
+        
+        full = f"{volume} {reporter_clean} {page}"
+        if full not in seen:
+            citations.append(ExtractedCitation(
+                volume=volume, reporter=reporter_clean, 
+                page=page, full_citation=full
+            ))
+            seen.add(full)
+    
+    return citations
+
+
+def extract_statutes_regex(text: str) -> List[ExtractedStatute]:
+    """
+    Extract RCW (Revised Code of Washington) statute citations.
+    Pattern: RCW 49.62.070
+    """
+    statutes = []
+    seen = set()
+    
+    rcw_pattern = re.compile(r'RCW\s+(\d+\.\d+(?:\.\d+)?)', re.IGNORECASE)
+    
+    for match in rcw_pattern.finditer(text):
+        rcw = match.group(1).rstrip('.')
+        if rcw not in seen:
+            statutes.append(ExtractedStatute(rcw_number=rcw, full_text=f"RCW {rcw}"))
+            seen.add(rcw)
+    
+    return statutes
+
+
+def extract_outcome_regex(text: str) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Extract appeal outcome from document text.
+    Returns (appeal_outcome, outcome_detail) tuple.
+    """
+    # Search last 5000 chars where outcomes typically appear
+    footer = text[-5000:] if len(text) > 5000 else text
+    
+    # Outcome patterns - ordered from most specific to least specific
+    outcome_patterns = [
+        # Combined outcomes (most specific first)
+        (r'affirm(?:ed)?\s+in\s+part[,\s]+(?:and\s+)?revers(?:ed)?\s+in\s+part', 
+         'affirmed', 'affirmed in part, reversed in part'),
+        (r'revers(?:ed)?\s+in\s+part[,\s]+(?:and\s+)?affirm(?:ed)?\s+in\s+part', 
+         'reversed', 'reversed in part, affirmed in part'),
+        (r'(?:we\s+)?revers(?:e|ed)\s+(?:and\s+)?remand', 
+         'reversed', 'reversed and remanded'),
+        (r'(?:we\s+)?affirm(?:ed)?\s+(?:and\s+)?remand', 
+         'affirmed', 'affirmed and remanded'),
+        # "We reverse/affirm" patterns (common in WA opinions)
+        (r'\bwe\s+remand\b', 'remanded', None),
+        (r'\bwe\s+affirm\b', 'affirmed', None),
+        (r'\bwe\s+reverse\b', 'reversed', None),
+        (r'\bwe\s+dismiss\b', 'dismissed', None),
+        # "is hereby affirmed" patterns
+        (r'\bis\s+(?:hereby\s+)?affirmed\b', 'affirmed', None),
+        (r'\bis\s+(?:hereby\s+)?reversed\b', 'reversed', None),
+        (r'\bis\s+(?:hereby\s+)?remanded\b', 'remanded', None),
+        (r'\bis\s+(?:hereby\s+)?dismissed\b', 'dismissed', None),
+        # Simple past tense forms (least specific)
+        (r'\baffirmed\b', 'affirmed', None),
+        (r'\breversed\b', 'reversed', None),
+        (r'\bremanded\b', 'remanded', None),
+        (r'\bdismissed\b', 'dismissed', None),
+    ]
+    
+    for pattern, outcome, detail in outcome_patterns:
+        if re.search(pattern, footer, re.IGNORECASE):
+            return outcome, detail
+    
+    return None, None
+
+
+def extract_en_banc_regex(text: str) -> bool:
+    """Check if case was heard en banc."""
+    header = text[:3000]
+    return bool(re.search(r'\bEN\s+BANC\b', header, re.IGNORECASE))
+
+
+def extract_all_regex(text: str, metadata: Optional[Dict[str, Any]] = None) -> RegexExtractionResult:
+    """
+    Comprehensive regex extraction - extracts ALL available fields.
+    This is the main entry point for regex extraction.
+    
+    Args:
+        text: Full text content of the PDF
+        metadata: Optional metadata dict from CSV
+        
+    Returns:
+        RegexExtractionResult with all extracted data
+    """
+    result = RegexExtractionResult()
+    
+    # Court info
+    result.court_level = extract_court_level_regex(text)
+    result.division = extract_division_regex(text)
+    result.publication_status = extract_publication_status_regex(text)
+    
+    # Case identifiers
+    result.case_file_id = extract_case_number_regex(text)
+    result.case_type = extract_case_type_regex(text)
+    
+    # Location
+    result.county = extract_county_regex(text)
+    
+    # Outcome
+    result.appeal_outcome, result.outcome_detail = extract_outcome_regex(text)
+    
+    # Entities
+    parties_tuples = extract_parties_regex(text)
+    result.parties = [ExtractedParty(name=name, role=role) for name, role in parties_tuples]
+    
+    judges_tuples = extract_judges_regex(text)
+    result.judges = [ExtractedJudge(name=name, role=role) for name, role in judges_tuples]
+    
+    result.citations = extract_citations_regex(text)
+    result.statutes = extract_statutes_regex(text)
+    
+    # Flags
+    result.en_banc = extract_en_banc_regex(text)
+    
+    logger.info(f"Regex extraction complete: {len(result.judges)} judges, "
+               f"{len(result.citations)} citations, {len(result.statutes)} statutes, "
+               f"outcome={result.appeal_outcome}")
+    
+    return result
+
+
 def regex_pre_extract(text: str) -> Dict[str, Any]:
     """
     Perform regex pre-extraction to reliably extract key fields.
     These will override AI responses for fields where regex is more reliable.
     """
+    appeal_outcome, outcome_detail = extract_outcome_regex(text)
+    
     return {
         'court_level': extract_court_level_regex(text),
         'district': extract_division_regex(text),
@@ -389,6 +616,11 @@ def regex_pre_extract(text: str) -> Dict[str, Any]:
         'county': extract_county_regex(text),
         'parties_regex': extract_parties_regex(text),
         'judges_regex': extract_judges_regex(text),
+        'citations': extract_citations_regex(text),
+        'statutes': extract_statutes_regex(text),
+        'appeal_outcome': appeal_outcome,
+        'outcome_detail': outcome_detail,
+        'en_banc': extract_en_banc_regex(text),
     }
 
 

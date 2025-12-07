@@ -13,8 +13,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
 # Import our extraction and database services
-from .ai_extractor import extract_case_data
-from .regex_extractor import extract_case_data_regex
+from .ai_extractor import extract_case_data, extract_all_regex, RegexExtractionResult
 from .hybrid_extractor import extract_hybrid, HybridExtractionResult
 from .database_inserter import DatabaseInserter
 
@@ -116,7 +115,7 @@ class LegalCaseIngestor:
             elif extraction_mode == 'regex':
                 # FAST: Use regex extraction only (some columns will be empty)
                 logger.info("[REGEX] Running regex extraction...")
-                regex_result = extract_case_data_regex(full_text, metadata)
+                regex_result = extract_all_regex(full_text, metadata)
                 
                 logger.info(f"[OK] Regex extraction: {len(regex_result.judges)} judges, "
                            f"{len(regex_result.citations)} citations, "

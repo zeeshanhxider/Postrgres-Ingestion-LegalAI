@@ -15,15 +15,16 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 
-from .regex_extractor import (
-    RegexExtractor, 
+# All regex extraction is now consolidated in ai_extractor
+from .ai_extractor import (
+    extract_case_data,
+    extract_all_regex,
     RegexExtractionResult,
     ExtractedJudge,
     ExtractedParty,
     ExtractedCitation,
     ExtractedStatute
 )
-from .ai_extractor import extract_case_data
 from .models import (
     LegalCaseExtraction,
     CaseModel,
@@ -145,7 +146,7 @@ class HybridExtractor:
     """
     
     def __init__(self):
-        self.regex_extractor = RegexExtractor()
+        pass  # No longer needs RegexExtractor instance
     
     def extract(
         self,
@@ -176,7 +177,7 @@ class HybridExtractor:
         # === PHASE 2: REGEX EXTRACTION (always runs) ===
         logger.info("[HYBRID] Phase 2: Running regex extraction...")
         try:
-            regex_result = self.regex_extractor.extract_from_pdf_text(full_text, metadata)
+            regex_result = extract_all_regex(full_text, metadata)
             self._merge_regex_results(result, regex_result)
             result.regex_extraction_successful = True
             logger.info(f"[HYBRID] Regex: {len(result.judges)} judges, {len(result.citations)} citations, "

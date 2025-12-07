@@ -460,7 +460,7 @@ class DatabaseInserter:
         Returns:
             case_id if successful, None if failed
         """
-        from .regex_extractor import RegexExtractionResult
+        from .ai_extractor import RegexExtractionResult
         
         # Ensure metadata exists
         if not metadata:
