@@ -83,17 +83,54 @@ Production-grade pipeline for extracting structured data from Washington State c
 ### Process a Single Case
 
 ```bash
-python run_pipeline.py downloads/Supreme_Court_Opinions/2025/January/case.pdf \
+python run_pipeline.py "downloads/Supreme_Court_Opinions/2025/January/case.pdf" \
     --metadata downloads/Supreme_Court_Opinions/metadata.csv
 ```
 
 ### Batch Processing
 
 ```bash
-python run_pipeline.py downloads/Supreme_Court_Opinions/2025/ \
+python run_pipeline.py "downloads/Supreme_Court_Opinions/2025/" \
     --metadata downloads/Supreme_Court_Opinions/metadata.csv \
     --limit 50
 ```
+
+### Parallel Processing
+
+Process multiple cases concurrently for faster batch ingestion:
+
+```bash
+# Process with 4 workers (default)
+python run_pipeline.py "downloads/Court_of_Appeals_Published/2024/" \
+    --workers 4
+
+# Process with 8 workers
+python run_pipeline.py "downloads/Court_of_Appeals_Published/2024/" \
+    --workers 8
+
+# Force sequential processing (1 at a time)
+python run_pipeline.py "downloads/Court_of_Appeals_Published/2024/" \
+    --sequential
+```
+
+**Note:** Parallel processing significantly speeds up batch ingestion but may hit rate limits on LlamaParse or Ollama servers. Adjust `--workers` based on your server capacity.
+
+### PDF Extraction Options
+
+Choose PDF extraction method:
+
+```bash
+# Use pdfplumber (default, faster, more reliable)
+python run_pipeline.py case.pdf --pdf-extractor pdfplumber
+
+# Use LlamaParse (better OCR, requires API key)
+python run_pipeline.py case.pdf --pdf-extractor llamaparse
+
+# Auto mode (tries LlamaParse first, falls back to pdfplumber)
+python run_pipeline.py case.pdf --pdf-extractor auto
+```
+
+**Recommendation:** Use `pdfplumber` for Washington State court opinions (clean PDFs). Use `llamaparse` for scanned documents or complex layouts.
 
 ### RAG Options
 
@@ -120,8 +157,47 @@ python -m pipeline.run_pipeline --verify --case-id 21
 ### Extract Only (No Database)
 
 ```bash
-python run_pipeline.py case.pdf --no-db
+python run_pipeline.py "case.pdf" --no-db
 ```
+
+### Additional Options
+
+```bash
+# Limit number of files to process in batch
+python run_pipeline.py "downloads/Court_of_Appeals_Published/2024/" --limit 10
+
+# Change Ollama model
+python run_pipeline.py "case.pdf" --model qwen2.5:14b-instruct
+
+# Verbose logging
+python run_pipeline.py "case.pdf" --verbose
+
+# Combine multiple options
+python run_pipeline.py "downloads/Court_of_Appeals_Published/2024/" \
+    --workers 8 \
+    --limit 100 \
+    --pdf-extractor pdfplumber \
+    --chunk-embedding all \
+    --phrase-filter strict \
+    --verbose
+```
+
+## Command-Line Arguments
+
+| Argument            | Type   | Default              | Description                               |
+| ------------------- | ------ | -------------------- | ----------------------------------------- |
+| `source`            | string | _required_           | Path to PDF file or directory             |
+| `--metadata`        | string | None                 | Path to metadata CSV file                 |
+| `--limit`           | int    | None                 | Max files to process in batch             |
+| `--no-db`           | flag   | False                | Skip database insertion (extraction only) |
+| `--no-rag`          | flag   | False                | Skip RAG processing                       |
+| `--model`           | string | qwen2.5:32b-instruct | Ollama model name                         |
+| `--workers`         | int    | 4                    | Number of parallel workers                |
+| `--sequential`      | flag   | False                | Disable parallel processing               |
+| `--pdf-extractor`   | choice | pdfplumber           | `llamaparse`, `pdfplumber`, or `auto`     |
+| `--chunk-embedding` | choice | all                  | `all`, `important`, or `none`             |
+| `--phrase-filter`   | choice | strict               | `strict` or `relaxed`                     |
+| `--verbose`, `-v`   | flag   | False                | Enable verbose logging                    |
 
 ## Environment Variables
 

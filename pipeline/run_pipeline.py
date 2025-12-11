@@ -37,10 +37,14 @@ def process_single_case(args):
     """Process a single PDF file."""
     logger.info(f"Processing single case: {args.pdf}")
     
+    # Create PDF extractor with specified mode
+    from .pdf_extractor import PDFExtractor
+    pdf_extractor = PDFExtractor(mode=args.pdf_extractor)
+    
     # Load metadata if provided
     metadata_row = None
     if args.csv and args.row is not None:
-        processor = CaseProcessor()
+        processor = CaseProcessor(pdf_extractor=pdf_extractor)
         metadata_map = processor.load_metadata_csv(args.csv)
         
         # Find by row number (1-indexed in the CSV means index in the list)
@@ -56,7 +60,7 @@ def process_single_case(args):
             logger.warning(f"Row {args.row} not found in CSV, processing without metadata")
     
     # Process the case
-    processor = CaseProcessor()
+    processor = CaseProcessor(pdf_extractor=pdf_extractor)
     case = processor.process_case(args.pdf, metadata_row)
     
     if not case.extraction_successful:
@@ -97,11 +101,23 @@ def process_batch(args):
     """Process a batch of PDF files."""
     logger.info(f"Processing batch from: {args.pdf_dir}")
     
-    processor = CaseProcessor()
+    # Determine number of workers
+    max_workers = 1 if args.sequential else args.workers
+    parallel = not args.sequential and args.workers > 1
+    
+    # Create PDF extractor with specified mode
+    from .pdf_extractor import PDFExtractor
+    pdf_extractor = PDFExtractor(mode=args.pdf_extractor)
+    
+    processor = CaseProcessor(
+        pdf_extractor=pdf_extractor,
+        max_workers=max_workers
+    )
     cases = processor.process_batch(
         pdf_dir=args.pdf_dir,
         metadata_csv=args.csv,
-        limit=args.limit
+        limit=args.limit,
+        parallel=parallel
     )
     
     # Insert all successful cases
@@ -242,6 +258,26 @@ Examples:
     parser.add_argument('--row', type=int, help='Row number in CSV (1-indexed)')
     parser.add_argument('--limit', type=int, help='Limit number of files in batch')
     parser.add_argument('--case-id', type=int, help='Case ID for verification')
+    
+    # Processing options
+    parser.add_argument(
+        '--workers',
+        type=int,
+        default=4,
+        help='Number of parallel workers for batch processing (default: 4)'
+    )
+    parser.add_argument(
+        '--sequential',
+        action='store_true',
+        help='Force sequential processing (1 worker)'
+    )
+    parser.add_argument(
+        '--pdf-extractor',
+        type=str,
+        choices=['pdfplumber', 'llamaparse', 'auto'],
+        default='pdfplumber',
+        help='PDF extraction method: pdfplumber (default, fast), llamaparse (OCR), auto (try llamaparse first)'
+    )
     
     # RAG options
     parser.add_argument(
