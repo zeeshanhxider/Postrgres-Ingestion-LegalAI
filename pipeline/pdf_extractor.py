@@ -122,6 +122,7 @@ class PDFExtractor:
         """
         Extract text using LlamaParse (cloud-based, high quality).
         Uses semaphore to limit concurrent API calls and retries on failure.
+        Automatically removes slip opinion notice text if present.
         
         Args:
             pdf_path: Path to PDF file
@@ -143,6 +144,9 @@ class PDFExtractor:
                     
                     # Combine all document text
                     full_text = "\n\n".join([doc.text for doc in documents])
+                    
+                    # Remove slip opinion notice if present at the beginning
+                    full_text = self._remove_slip_opinion_notice(full_text)
                     
                     # Estimate page count
                     page_count = self._get_page_count(pdf_path)
@@ -172,9 +176,66 @@ class PDFExtractor:
         # Should not reach here, but fallback just in case
         return self._extract_with_pdfplumber(pdf_path)
     
+    def _remove_slip_opinion_notice(self, text: str) -> str:
+        """
+        Remove the slip opinion notice from the beginning of extracted text.
+        This handles cases where LlamaParse combines all pages into one text block.
+        
+        Args:
+            text: Full extracted text
+            
+        Returns:
+            Text with slip opinion notice removed
+        """
+        import re
+        
+        # Pattern to match the slip opinion notice section
+        # It starts with "NOTICE: SLIP OPINION" and ends around the courts.wa.gov link
+        slip_notice_pattern = re.compile(
+            r'^.*?NOTICE:\s*SLIP\s*OPINION.*?(?:courts\.wa\.gov/opinions|linked there\.)\s*',
+            re.DOTALL | re.IGNORECASE
+        )
+        
+        # Check if text starts with slip opinion notice
+        if 'NOTICE' in text[:500] and 'SLIP OPINION' in text[:500]:
+            cleaned = slip_notice_pattern.sub('', text, count=1)
+            if cleaned != text:
+                logger.info("Removed slip opinion notice from text")
+            return cleaned.strip()
+        
+        return text
+    
+    def _is_slip_opinion_notice_page(self, page_text: str) -> bool:
+        """
+        Check if a page is the standard Washington State slip opinion notice page.
+        
+        Args:
+            page_text: Text content of the page
+            
+        Returns:
+            True if this is a slip opinion notice page that should be skipped
+        """
+        if not page_text:
+            return False
+        
+        # Key phrases that identify the slip opinion notice page
+        slip_opinion_markers = [
+            "NOTICE: SLIP OPINION",
+            "not the court's final written decision",
+            "slip opinion that begins on the next page",
+            "Slip opinions are the written opinions that are originally filed"
+        ]
+        
+        # Check if multiple markers are present (to avoid false positives)
+        markers_found = sum(1 for marker in slip_opinion_markers if marker.lower() in page_text.lower())
+        
+        # If at least 2 markers found and page is relatively short (notice pages are typically <2000 chars)
+        return markers_found >= 2 and len(page_text) < 3000
+    
     def _extract_with_pdfplumber(self, pdf_path: Path) -> Tuple[str, int]:
         """
         Extract text using pdfplumber (local, faster but less accurate).
+        Automatically skips the slip opinion notice page if present.
         
         Args:
             pdf_path: Path to PDF file
@@ -189,15 +250,26 @@ class PDFExtractor:
             
             pages_text = []
             page_count = 0
+            skipped_slip_notice = False
             
             with pdfplumber.open(pdf_path) as pdf:
                 page_count = len(pdf.pages)
-                for page in pdf.pages:
+                
+                for i, page in enumerate(pdf.pages):
                     text = page.extract_text() or ""
+                    
+                    # Check if first page is a slip opinion notice - skip it
+                    if i == 0 and self._is_slip_opinion_notice_page(text):
+                        logger.info(f"Skipping slip opinion notice page (page 1)")
+                        skipped_slip_notice = True
+                        continue
+                    
                     pages_text.append(text)
             
             full_text = "\n\n".join(pages_text)
-            logger.info(f"pdfplumber extracted {len(full_text)} chars from {page_count} pages")
+            actual_pages = page_count - (1 if skipped_slip_notice else 0)
+            logger.info(f"pdfplumber extracted {len(full_text)} chars from {actual_pages} pages" + 
+                       (" (skipped slip notice)" if skipped_slip_notice else ""))
             
             return full_text, page_count
             

@@ -117,63 +117,17 @@ class LLMExtractor:
         
         logger.info(f"LLM Extractor initialized with model: {self.model}")
     
-    def _strip_slip_opinion_notice(self, text: str) -> str:
-        """
-        Remove the standard "NOTICE: SLIP OPINION" boilerplate that appears
-        on every page of many Washington State court PDFs.
-        
-        This is noise for LLM extraction.
-        """
-        import re
-        
-        original_len = len(text)
-        
-        # Remove ALL occurrences of the slip opinion notice (appears on every page with pdfplumber)
-        # Pattern: "NOTICE: SLIP OPINION (not the court's final written decision)..." up to end of that line/paragraph
-        text = re.sub(
-            r'NOTICE:\s*SLIP OPINION\s*\(not the court\'s final written decision\)[^\n]*(?:\n[^\n]*(?:slip opinion|written opinions|subject to revision)[^\n]*)*',
-            '',
-            text,
-            flags=re.IGNORECASE
-        )
-        
-        # Also remove simpler variants
-        text = re.sub(
-            r'NOTICE:\s*SLIP OPINION[^\n]*\n?',
-            '',
-            text,
-            flags=re.IGNORECASE
-        )
-        
-        # Remove repeated "For the current opinion" lines throughout the document
-        text = re.sub(
-            r'For the current opinion, go to https://www\.lexisnexis\.com/clients/wareports/\.\s*\n?',
-            '',
-            text
-        )
-        
-        # Clean up multiple blank lines left behind
-        text = re.sub(r'\n{3,}', '\n\n', text)
-        
-        if len(text) < original_len:
-            logger.debug(f"Stripped slip opinion notices: {original_len - len(text)} chars removed")
-        
-        return text.strip()
-    
     def extract(self, text: str, max_chars: int = 30000) -> Dict[str, Any]:
         """
         Extract structured data from case text using LLM.
         
         Args:
-            text: Full text of the legal document
+            text: Full text of the legal document (slip opinion notice already removed by PDFExtractor)
             max_chars: Maximum characters to send to LLM (truncate if longer)
             
         Returns:
             Dictionary with extracted data
         """
-        # Strip the "NOTICE: SLIP OPINION" cover page if present
-        text = self._strip_slip_opinion_notice(text)
-        
         # Truncate text if too long (keep beginning and end for context)
         if len(text) > max_chars:
             half = max_chars // 2
