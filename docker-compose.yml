@@ -1,7 +1,7 @@
 services:
   postgres:
     image: pgvector/pgvector:pg16
-    container_name: legal_ai_postgres
+    container_name: legal_ai_postgres_v2
     environment:
       POSTGRES_DB: cases_llama3_3
       POSTGRES_USER: postgres
@@ -26,7 +26,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: legal_ai_redis
+    container_name: legal_ai_redis_v2
     ports:
       - "6379:6379"
     volumes:
@@ -40,7 +40,7 @@ services:
 
   api:
     build: .
-    container_name: legal_ai_api
+    container_name: legal_ai_api_v2
     environment:
       - DATABASE_URL=postgresql://postgres:postgres123@postgres:5432/cases_llama3_3
       - REDIS_URL=redis://redis:6379
