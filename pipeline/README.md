@@ -80,19 +80,29 @@ Production-grade pipeline for extracting structured data from Washington State c
 
 ## Usage
 
+### Quick Start Examples
+
+```bash
+# Process 1 Court of Appeals Published cases with metadata
+python -m pipeline.run_pipeline --batch --pdf-dir downloads/Court_of_Appeals_Published --csv downloads/Court_of_Appeals_Published/metadata.csv --limit 1 --workers 1 --pdf-extractor pdfplumber
+
+# Process 10 Supreme Court opinions
+python -m pipeline.run_pipeline --batch --pdf-dir downloads/Supreme_Court_Opinions --csv downloads/Supreme_Court_Opinions/metadata.csv --limit 10 --workers 1 --pdf-extractor pdfplumber
+
+# Process 100 cases with 4 parallel workers
+python -m pipeline.run_pipeline --batch --pdf-dir downloads/Court_of_Appeals_Published --csv downloads/Court_of_Appeals_Published/metadata.csv --limit 100 --workers 4 --pdf-extractor pdfplumber
+```
+
 ### Process a Single Case
 
 ```bash
-python run_pipeline.py "downloads/Supreme_Court_Opinions/2025/January/case.pdf" \
-    --metadata downloads/Supreme_Court_Opinions/metadata.csv
+python -m pipeline.run_pipeline --pdf downloads/Supreme_Court_Opinions/2025/January/case.pdf --csv downloads/Supreme_Court_Opinions/metadata.csv --row 21
 ```
 
 ### Batch Processing
 
 ```bash
-python run_pipeline.py "downloads/Supreme_Court_Opinions/2025/" \
-    --metadata downloads/Supreme_Court_Opinions/metadata.csv \
-    --limit 50
+python -m pipeline.run_pipeline --batch --pdf-dir downloads/Supreme_Court_Opinions --csv downloads/Supreme_Court_Opinions/metadata.csv --limit 50
 ```
 
 ### Parallel Processing
@@ -101,16 +111,13 @@ Process multiple cases concurrently for faster batch ingestion:
 
 ```bash
 # Process with 4 workers (default)
-python run_pipeline.py "downloads/Court_of_Appeals_Published/2024/" \
-    --workers 4
+python -m pipeline.run_pipeline --batch --pdf-dir downloads/Court_of_Appeals_Published/2024 --csv downloads/Court_of_Appeals_Published/metadata.csv --workers 4
 
 # Process with 8 workers
-python run_pipeline.py "downloads/Court_of_Appeals_Published/2024/" \
-    --workers 8
+python -m pipeline.run_pipeline --batch --pdf-dir downloads/Court_of_Appeals_Published/2024 --csv downloads/Court_of_Appeals_Published/metadata.csv --workers 8
 
 # Force sequential processing (1 at a time)
-python run_pipeline.py "downloads/Court_of_Appeals_Published/2024/" \
-    --sequential
+python -m pipeline.run_pipeline --batch --pdf-dir downloads/Court_of_Appeals_Published/2024 --csv downloads/Court_of_Appeals_Published/metadata.csv --sequential
 ```
 
 **Note:** Parallel processing significantly speeds up batch ingestion but may hit rate limits on LlamaParse or Ollama servers. Adjust `--workers` based on your server capacity.
@@ -121,13 +128,13 @@ Choose PDF extraction method:
 
 ```bash
 # Use pdfplumber (default, faster, more reliable)
-python run_pipeline.py case.pdf --pdf-extractor pdfplumber
+python -m pipeline.run_pipeline --pdf case.pdf --pdf-extractor pdfplumber
 
 # Use LlamaParse (better OCR, requires API key)
-python run_pipeline.py case.pdf --pdf-extractor llamaparse
+python -m pipeline.run_pipeline --pdf case.pdf --pdf-extractor llamaparse
 
 # Auto mode (tries LlamaParse first, falls back to pdfplumber)
-python run_pipeline.py case.pdf --pdf-extractor auto
+python -m pipeline.run_pipeline --pdf case.pdf --pdf-extractor auto
 ```
 
 **Recommendation:** Use `pdfplumber` for Washington State court opinions (clean PDFs). Use `llamaparse` for scanned documents or complex layouts.
@@ -157,47 +164,41 @@ python -m pipeline.run_pipeline --verify --case-id 21
 ### Extract Only (No Database)
 
 ```bash
-python run_pipeline.py "case.pdf" --no-db
+python -m pipeline.run_pipeline --pdf case.pdf --no-rag
 ```
 
 ### Additional Options
 
 ```bash
 # Limit number of files to process in batch
-python run_pipeline.py "downloads/Court_of_Appeals_Published/2024/" --limit 10
-
-# Change Ollama model
-python run_pipeline.py "case.pdf" --model qwen2.5:14b-instruct
+python -m pipeline.run_pipeline --batch --pdf-dir downloads/Court_of_Appeals_Published/2024 --limit 10
 
 # Verbose logging
-python run_pipeline.py "case.pdf" --verbose
+python -m pipeline.run_pipeline --pdf case.pdf --verbose
 
 # Combine multiple options
-python run_pipeline.py "downloads/Court_of_Appeals_Published/2024/" \
-    --workers 8 \
-    --limit 100 \
-    --pdf-extractor pdfplumber \
-    --chunk-embedding all \
-    --phrase-filter strict \
-    --verbose
+python -m pipeline.run_pipeline --batch --pdf-dir downloads/Court_of_Appeals_Published/2024 --csv downloads/Court_of_Appeals_Published/metadata.csv --workers 8 --limit 100 --pdf-extractor pdfplumber --chunk-embeddings all --phrase-filter strict
 ```
 
 ## Command-Line Arguments
 
-| Argument            | Type   | Default              | Description                               |
-| ------------------- | ------ | -------------------- | ----------------------------------------- |
-| `source`            | string | _required_           | Path to PDF file or directory             |
-| `--metadata`        | string | None                 | Path to metadata CSV file                 |
-| `--limit`           | int    | None                 | Max files to process in batch             |
-| `--no-db`           | flag   | False                | Skip database insertion (extraction only) |
-| `--no-rag`          | flag   | False                | Skip RAG processing                       |
-| `--model`           | string | qwen2.5:32b-instruct | Ollama model name                         |
-| `--workers`         | int    | 4                    | Number of parallel workers                |
-| `--sequential`      | flag   | False                | Disable parallel processing               |
-| `--pdf-extractor`   | choice | pdfplumber           | `llamaparse`, `pdfplumber`, or `auto`     |
-| `--chunk-embedding` | choice | all                  | `all`, `important`, or `none`             |
-| `--phrase-filter`   | choice | strict               | `strict` or `relaxed`                     |
-| `--verbose`, `-v`   | flag   | False                | Enable verbose logging                    |
+| Argument             | Type   | Default    | Description                                |
+| -------------------- | ------ | ---------- | ------------------------------------------ |
+| `--batch`            | flag   | False      | Enable batch processing mode               |
+| `--pdf`              | string | None       | Path to single PDF file                    |
+| `--pdf-dir`          | string | None       | Directory with PDF files (for batch)       |
+| `--csv`              | string | None       | Path to metadata CSV file                  |
+| `--row`              | int    | None       | Row number in CSV (1-indexed, single mode) |
+| `--limit`            | int    | None       | Max files to process in batch              |
+| `--workers`          | int    | 4          | Number of parallel workers                 |
+| `--sequential`       | flag   | False      | Disable parallel processing                |
+| `--pdf-extractor`    | choice | pdfplumber | `llamaparse`, `pdfplumber`, or `auto`      |
+| `--enable-rag`       | flag   | True       | Enable RAG processing (default)            |
+| `--no-rag`           | flag   | False      | Disable RAG processing                     |
+| `--chunk-embeddings` | choice | all        | `all`, `important`, or `none`              |
+| `--phrase-filter`    | choice | strict     | `strict` or `relaxed`                      |
+| `--verify`           | flag   | False      | Verify case data in database               |
+| `--case-id`          | int    | None       | Case ID for verification                   |
 
 ## Environment Variables
 

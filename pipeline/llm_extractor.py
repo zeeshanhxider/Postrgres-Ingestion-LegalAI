@@ -117,22 +117,24 @@ class LLMExtractor:
         
         logger.info(f"LLM Extractor initialized with model: {self.model}")
     
-    def extract(self, text: str, max_chars: int = 30000) -> Dict[str, Any]:
+    def extract(self, text: str, max_chars: int = None) -> Dict[str, Any]:
         """
         Extract structured data from case text using LLM.
         
         Args:
             text: Full text of the legal document (slip opinion notice already removed by PDFExtractor)
-            max_chars: Maximum characters to send to LLM (truncate if longer)
+            max_chars: Maximum characters to send to LLM (None = no truncation, send full text)
             
         Returns:
             Dictionary with extracted data
         """
-        # Truncate text if too long (keep beginning and end for context)
-        if len(text) > max_chars:
+        # Only truncate if max_chars is explicitly set (for backwards compatibility)
+        if max_chars is not None and len(text) > max_chars:
             half = max_chars // 2
             text = text[:half] + "\n\n[...middle content truncated...]\n\n" + text[-half:]
             logger.info(f"Text truncated to {max_chars} chars")
+        else:
+            logger.info(f"Processing full text: {len(text)} chars")
         
         # Build the prompt
         prompt = EXTRACTION_PROMPT.format(text=text)
@@ -171,8 +173,8 @@ class LLMExtractor:
             "stream": False,
             "options": {
                 "temperature": 0.1,      # Low temperature for consistent extraction
-                "num_predict": 16384,    # Allow much longer responses for complex case JSON
-                "num_ctx": 32768,        # Large context window - required for long legal documents
+                "num_predict": 16384,    # Allow longer responses for complex case JSON
+                "num_ctx": 131072,       # Very large context window (128k) - handles full legal documents
             }
         }
         
