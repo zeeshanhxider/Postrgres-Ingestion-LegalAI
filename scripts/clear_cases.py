@@ -37,6 +37,10 @@ CASE_TABLES = [
     "parties",
     "judges",
     "cases",
+    # Dimension tables (can accumulate over time)
+    "courts_dim",
+    "case_types",
+    "stage_types",
 ]
 
 # Tables to NEVER touch (briefs-related)
