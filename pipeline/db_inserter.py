@@ -6,9 +6,10 @@ Integrates with RAG processor for full indexing pipeline.
 """
 
 import os
+import re
 import logging
 from datetime import datetime
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 import psycopg2
@@ -248,8 +249,8 @@ class DatabaseInserter:
         query = text("""
             INSERT INTO cases (
                 case_file_id, title, court_level, court, district, county,
-                docket_number, source_docket_number, trial_judge,
-                appeal_published_date, oral_argument_date, published,
+                docket_number, source_docket_number,
+                appeal_published_date, published,
                 summary, full_text, full_embedding,
                 source_url, case_info_url,
                 overall_case_outcome, appeal_outcome,
@@ -262,8 +263,8 @@ class DatabaseInserter:
                 created_at, updated_at
             ) VALUES (
                 :case_file_id, :title, :court_level, :court, :district, :county,
-                :docket_number, :source_docket_number, :trial_judge,
-                :appeal_published_date, :oral_argument_date, :published,
+                :docket_number, :source_docket_number,
+                :appeal_published_date, :published,
                 :summary, :full_text, :full_embedding,
                 :source_url, :case_info_url,
                 :overall_case_outcome, :appeal_outcome,
@@ -305,9 +306,7 @@ class DatabaseInserter:
             'county': case.county,
             'docket_number': docket,
             'source_docket_number': case.source_docket_number,
-            'trial_judge': case.trial_judge,
             'appeal_published_date': case.opinion_filed_date or meta.file_date,
-            'oral_argument_date': case.oral_argument_date,
             'published': published,
             'summary': case.summary or None,
             'full_text': case.full_text,
@@ -488,16 +487,115 @@ class DatabaseInserter:
         row = result.fetchone()
         return row.citation_id if row else 0
     
-    def _insert_statute(self, conn, case_id: int, statute: Statute) -> int:
-        """Insert a statute citation."""
+    def _parse_statute_citation(self, citation: str) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
+        """
+        Parse statute citation like "RCW 69.50.4013(1)" into components.
+        Returns (code, title, section, subsection)
+        
+        Examples:
+        - "RCW 69.50.4013(1)" -> ("RCW", "69", "50.4013", "1")
+        - "RCW 9.94A.525" -> ("RCW", "9", "94A.525", None)
+        - "RCW 42.17A.765(3)(a)" -> ("RCW", "42", "17A.765", "3)(a")
+        """
+        # Pattern: RCW <title>.<section>(optional subsection)
+        pattern = r'^(RCW)\s+(\d+)\.([0-9A-Za-z.]+)(?:\(([^)]+(?:\)[^)]*)*)\))?'
+        match = re.match(pattern, citation.strip(), re.IGNORECASE)
+        
+        if match:
+            code = match.group(1).upper()
+            title = match.group(2)
+            section = match.group(3)
+            subsection = match.group(4) if match.group(4) else None
+            return (code, title, section, subsection)
+        
+        return (None, None, None, None)
+    
+    def _resolve_statute_id(self, conn, citation: str) -> Optional[int]:
+        """
+        Resolve statute citation to statute_id from statutes_dim.
+        Tries multiple matching strategies:
+        1. Exact match with subsection
+        2. Match without subsection
+        3. Partial section match (for cases like "9.94A" matching "9.94A.525")
+        """
+        code, title, section, subsection = self._parse_statute_citation(citation)
+        
+        if not code or not title or not section:
+            return None
+        
+        # Strategy 1: Try exact match with subsection
+        if subsection:
+            query = text("""
+                SELECT statute_id FROM statutes_dim
+                WHERE jurisdiction = 'WA'
+                AND code = :code
+                AND title = :title
+                AND section = :section
+                AND (subsection = :subsection OR subsection IS NULL)
+                LIMIT 1
+            """)
+            result = conn.execute(query, {
+                'code': code,
+                'title': title,
+                'section': section,
+                'subsection': subsection
+            })
+            row = result.fetchone()
+            if row:
+                return row.statute_id
+        
+        # Strategy 2: Try exact match without subsection
         query = text("""
-            INSERT INTO statute_citations (case_id, raw_text, created_at)
-            VALUES (:case_id, :raw_text, :created_at)
+            SELECT statute_id FROM statutes_dim
+            WHERE jurisdiction = 'WA'
+            AND code = :code
+            AND title = :title
+            AND section = :section
+            LIMIT 1
+        """)
+        result = conn.execute(query, {
+            'code': code,
+            'title': title,
+            'section': section
+        })
+        row = result.fetchone()
+        if row:
+            return row.statute_id
+        
+        # Strategy 3: Try partial section match (section starts with our section)
+        query = text("""
+            SELECT statute_id FROM statutes_dim
+            WHERE jurisdiction = 'WA'
+            AND code = :code
+            AND title = :title
+            AND section LIKE :section_pattern
+            LIMIT 1
+        """)
+        result = conn.execute(query, {
+            'code': code,
+            'title': title,
+            'section_pattern': f"{section}%"
+        })
+        row = result.fetchone()
+        if row:
+            return row.statute_id
+        
+        return None
+    
+    def _insert_statute(self, conn, case_id: int, statute: Statute) -> int:
+        """Insert a statute citation with statute_id resolution."""
+        # Try to resolve statute_id
+        statute_id = self._resolve_statute_id(conn, statute.citation)
+        
+        query = text("""
+            INSERT INTO statute_citations (case_id, statute_id, raw_text, created_at)
+            VALUES (:case_id, :statute_id, :raw_text, :created_at)
             RETURNING id
         """)
         
         result = conn.execute(query, {
             'case_id': case_id,
+            'statute_id': statute_id,
             'raw_text': statute.citation,
             'created_at': datetime.now(),
         })

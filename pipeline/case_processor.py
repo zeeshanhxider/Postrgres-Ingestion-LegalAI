@@ -5,6 +5,7 @@ Combines metadata (CSV) + PDF extraction + LLM extraction
 
 import csv
 import logging
+import re
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 from datetime import datetime
@@ -20,6 +21,50 @@ logger = logging.getLogger(__name__)
 
 # Thread-local storage for per-thread extractors
 _thread_local = threading.local()
+
+# Washington State Counties (official list - 39 counties)
+WASHINGTON_COUNTIES = {
+    'adams', 'asotin', 'benton', 'chelan', 'clark', 'clallam', 'columbia',
+    'cowlitz', 'douglas', 'ferry', 'franklin', 'garfield', 'grant',
+    'grays harbor', 'island', 'jefferson', 'king', 'kitsap', 'kittitas',
+    'klickitat', 'lewis', 'lincoln', 'mason', 'okanogan', 'pacific',
+    'pend oreille', 'pierce', 'san juan', 'skagit', 'skamania',
+    'snohomish', 'spokane', 'stevens', 'thurston', 'wahkiakum',
+    'walla walla', 'whatcom', 'whitman', 'yakima'
+}
+
+
+def extract_county_from_text(text: str) -> Optional[str]:
+    """
+    Extract county name from case text using regex pattern matching.
+    Searches against official Washington State counties list.
+    
+    Args:
+        text: Full case text (not truncated)
+        
+    Returns:
+        County name (title case) or None
+    """
+    # Search first 15000 chars where county info typically appears
+    search_text = text[:15000].lower()
+    
+    # Try each county with various patterns
+    for county in WASHINGTON_COUNTIES:
+        patterns = [
+            rf'\b{county} county superior court\b',
+            rf'\bappeal from {county} county\b',
+            rf'\bfrom {county} county superior court\b',
+            rf'\bin {county} county\b',
+            rf'\bof {county} county\b',
+            rf'\b{county} county\b'
+        ]
+        
+        for pattern in patterns:
+            if re.search(pattern, search_text):
+                # Return proper title case
+                return county.title()
+    
+    return None
 
 
 class CaseProcessor:
@@ -171,6 +216,11 @@ class CaseProcessor:
             if not full_text or len(full_text.strip()) < 100:
                 raise ValueError("PDF text extraction returned insufficient content")
             
+            # Step 2.5: Extract county from full text (before LLM truncation)
+            extracted_county = extract_county_from_text(full_text)
+            if extracted_county:
+                logger.info(f"  Pre-extracted county: {extracted_county}")
+            
             # Step 3: Extract structured data using LLM
             logger.info("  Running LLM extraction...")
             llm_result = self.llm_extractor.extract(full_text)
@@ -181,7 +231,8 @@ class CaseProcessor:
             # Merge LLM extraction into our case
             case.summary = llm_case.summary
             case.case_type = llm_case.case_type
-            case.county = llm_case.county
+            # Use pre-extracted county (from full text) if available, otherwise LLM result
+            case.county = extracted_county or llm_case.county
             case.trial_court = llm_case.trial_court
             case.trial_judge = llm_case.trial_judge
             case.source_docket_number = llm_case.source_docket_number

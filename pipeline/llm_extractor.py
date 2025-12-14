@@ -503,7 +503,6 @@ class LLMExtractor:
         # procedural_dates -> date fields
         if "procedural_dates" in llm_result and isinstance(llm_result["procedural_dates"], dict):
             dates = llm_result["procedural_dates"]
-            llm_result["oral_argument_date"] = dates.get("oral_argument_date")
             llm_result["opinion_filed_date"] = dates.get("opinion_filed_date")
         
         # Simple fields
@@ -519,7 +518,6 @@ class LLMExtractor:
         case.winner_personal_role = llm_result.get("winner_personal_role")
         
         # Parse procedural dates
-        case.oral_argument_date = self._parse_date(llm_result.get("oral_argument_date"))
         case.opinion_filed_date = self._parse_date(llm_result.get("opinion_filed_date"))
         
         # Parties (handles both old and new schema field names)
