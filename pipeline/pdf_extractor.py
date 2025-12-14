@@ -7,6 +7,7 @@ import os
 import logging
 import time
 import threading
+import re
 from typing import Optional, Tuple
 from pathlib import Path
 
@@ -14,6 +15,29 @@ logger = logging.getLogger(__name__)
 
 # Semaphore to limit concurrent LlamaParse API calls
 _llamaparse_semaphore = threading.Semaphore(2)  # Max 2 concurrent calls
+
+
+def clean_cid_characters(text: str) -> str:
+    """
+    Remove CID (Character Identifier) encoding artifacts from PDF text.
+    These appear as (cid:X) when fonts don't have proper Unicode mappings.
+    
+    Args:
+        text: Raw text extracted from PDF
+        
+    Returns:
+        Cleaned text with CID codes removed
+    """
+    # Remove CID codes like (cid:3), (cid:123), etc.
+    cleaned = re.sub(r'\(cid:\d+\)', '', text)
+    
+    # Clean up multiple spaces left behind
+    cleaned = re.sub(r' +', ' ', cleaned)
+    
+    # Clean up multiple newlines
+    cleaned = re.sub(r'\n\s*\n\s*\n+', '\n\n', cleaned)
+    
+    return cleaned.strip()
 
 
 class PDFExtractor:
@@ -145,6 +169,9 @@ class PDFExtractor:
                     # Combine all document text
                     full_text = "\n\n".join([doc.text for doc in documents])
                     
+                    # Clean CID encoding artifacts
+                    full_text = clean_cid_characters(full_text)
+                    
                     # Remove slip opinion notice if present at the beginning
                     full_text = self._remove_slip_opinion_notice(full_text)
                     
@@ -267,6 +294,10 @@ class PDFExtractor:
                     pages_text.append(text)
             
             full_text = "\n\n".join(pages_text)
+            
+            # Clean CID encoding artifacts
+            full_text = clean_cid_characters(full_text)
+            
             actual_pages = page_count - (1 if skipped_slip_notice else 0)
             logger.info(f"pdfplumber extracted {len(full_text)} chars from {actual_pages} pages" + 
                        (" (skipped slip notice)" if skipped_slip_notice else ""))
