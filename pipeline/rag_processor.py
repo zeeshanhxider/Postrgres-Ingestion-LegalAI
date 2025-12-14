@@ -68,15 +68,15 @@ class RAGProcessor:
         db_engine: Engine,
         chunk_embedding_mode: ChunkEmbeddingMode = ChunkEmbeddingMode.ALL,
         phrase_filter_mode: PhraseFilterMode = PhraseFilterMode.STRICT,
-        batch_size: int = 50,
-        embedding_batch_size: int = 10
+        batch_size: int = 100,
+        embedding_batch_size: int = 25
     ):
         """
         Initialize RAG processor.
         
         Args:
             db_engine: SQLAlchemy database engine
-            chunk_embedding_mode: How to handle chunk embeddings
+            chunk_embedding_mode: How to handle chunk embeddings (default: ALL)
             phrase_filter_mode: Strictness of phrase filtering
             batch_size: Batch size for database inserts
             embedding_batch_size: Batch size for embedding API calls
@@ -286,9 +286,9 @@ class RAGProcessor:
                 f"{Config.OLLAMA_BASE_URL}/api/embeddings",
                 json={
                     "model": Config.OLLAMA_EMBEDDING_MODEL,
-                    "prompt": text_content[:8000]  # Truncate if too long
+                    "prompt": text_content[:4000]  # Truncate to 4k chars for faster embedding
                 },
-                timeout=60
+                timeout=30  # Reduced timeout for faster failure detection
             )
             response.raise_for_status()
             result = response.json()

@@ -64,13 +64,20 @@ class DatabaseInserter:
     @classmethod
     def from_url(cls, database_url: str, enable_rag: bool = True) -> 'DatabaseInserter':
         """
-        Create inserter from database URL.
+        Create inserter from database URL with connection pooling.
         
         Args:
             database_url: PostgreSQL connection string
             enable_rag: Whether to enable RAG processing
         """
-        engine = create_engine(database_url)
+        # Connection pooling for better performance
+        engine = create_engine(
+            database_url,
+            pool_size=5,           # Base pool size
+            max_overflow=10,       # Allow 10 extra connections
+            pool_pre_ping=True,    # Verify connections before use
+            pool_recycle=3600      # Recycle connections after 1 hour
+        )
         return cls(engine, enable_rag=enable_rag)
     
     def _get_psycopg2_connection(self):

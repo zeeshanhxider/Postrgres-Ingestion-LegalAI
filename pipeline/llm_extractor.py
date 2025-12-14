@@ -117,22 +117,35 @@ class LLMExtractor:
         
         logger.info(f"LLM Extractor initialized with model: {self.model}")
     
-    def extract(self, text: str, max_chars: int = None) -> Dict[str, Any]:
+    def extract(self, text: str, max_chars: int = 25000) -> Dict[str, Any]:
         """
         Extract structured data from case text using LLM.
         
         Args:
             text: Full text of the legal document (slip opinion notice already removed by PDFExtractor)
-            max_chars: Maximum characters to send to LLM (None = no truncation, send full text)
+            max_chars: Maximum characters to send to LLM (default 25000 for optimal performance)
             
         Returns:
             Dictionary with extracted data
         """
-        # Only truncate if max_chars is explicitly set (for backwards compatibility)
-        if max_chars is not None and len(text) > max_chars:
-            half = max_chars // 2
-            text = text[:half] + "\n\n[...middle content truncated...]\n\n" + text[-half:]
-            logger.info(f"Text truncated to {max_chars} chars")
+        # Smart truncation: Keep header (parties, court info), footer (outcome), sample middle
+        if len(text) > max_chars:
+            # Header: first 40% - contains parties, court, case number, facts
+            header_size = int(max_chars * 0.40)
+            # Footer: last 25% - contains outcome, ruling, disposition  
+            footer_size = int(max_chars * 0.25)
+            # Middle sample: 35% - contains analysis, citations
+            middle_size = max_chars - header_size - footer_size
+            
+            header = text[:header_size]
+            footer = text[-footer_size:]
+            
+            # Get middle sample from document center
+            middle_start = len(text) // 2 - middle_size // 2
+            middle = text[middle_start:middle_start + middle_size]
+            
+            text = header + "\n\n[...document continues...]\n\n" + middle + "\n\n[...document continues...]\n\n" + footer
+            logger.info(f"Smart truncation: {len(text)} chars (header={header_size}, middle={middle_size}, footer={footer_size})")
         else:
             logger.info(f"Processing full text: {len(text)} chars")
         
@@ -173,8 +186,8 @@ class LLMExtractor:
             "stream": False,
             "options": {
                 "temperature": 0.1,      # Low temperature for consistent extraction
-                "num_predict": 16384,    # Allow longer responses for complex case JSON
-                "num_ctx": 131072,       # Very large context window (128k) - handles full legal documents
+                "num_predict": 8192,     # Reduced from 16384 - sufficient for case JSON
+                "num_ctx": 32768,        # Reduced from 128k to 32k - saves memory/time
             }
         }
         

@@ -26,9 +26,9 @@ class PipelineConfig:
     ollama_model: str = "qwen:32b"
     ollama_embedding_model: str = "mxbai-embed-large"
     
-    # Processing settings
-    max_text_chars: int = 30000      # Max chars to send to LLM
-    llm_timeout: int = 300           # LLM request timeout in seconds
+    # Processing settings (optimized for performance)
+    max_text_chars: int = 25000      # Max chars to send to LLM (optimized)
+    llm_timeout: int = 180           # LLM request timeout in seconds (optimized)
     
     @classmethod
     def from_env(cls) -> 'PipelineConfig':

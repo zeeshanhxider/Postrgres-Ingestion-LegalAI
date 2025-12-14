@@ -34,7 +34,7 @@ class WordProcessor:
         'further', 'any', 'however', 'therefore', 'thus', 'hence', 'although'
     }
     
-    def __init__(self, db_engine: Engine, batch_size: int = 50):
+    def __init__(self, db_engine: Engine, batch_size: int = 500):
         self.db = db_engine
         self.batch_size = batch_size
         self._word_cache: Dict[str, int] = {}  # word -> word_id cache
@@ -351,23 +351,29 @@ class WordProcessor:
         return len(tokens)
     
     def flush(self):
-        """Flush pending word occurrences to database."""
+        """Flush pending word occurrences to database using bulk insert."""
         if not self._pending_occurrences:
             return
         
         with self.db.connect() as conn:
+            # Use executemany for bulk insert - much faster than individual inserts
             insert_query = text("""
                 INSERT INTO word_occurrence (word_id, case_id, chunk_id, sentence_id, document_id, position)
                 VALUES (:word_id, :case_id, :chunk_id, :sentence_id, :document_id, :position)
                 ON CONFLICT (word_id, sentence_id, position) DO NOTHING
             """)
             
-            for occ in self._pending_occurrences:
-                try:
-                    conn.execute(insert_query, occ)
-                except Exception:
-                    pass
-            
-            conn.commit()
+            try:
+                conn.execute(insert_query, self._pending_occurrences)
+                conn.commit()
+            except Exception as e:
+                # Fallback to individual inserts if bulk fails
+                logger.warning(f"Bulk insert failed, using individual: {e}")
+                for occ in self._pending_occurrences:
+                    try:
+                        conn.execute(insert_query, occ)
+                    except Exception:
+                        pass
+                conn.commit()
         
         self._pending_occurrences = []

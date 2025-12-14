@@ -342,7 +342,7 @@ class PhraseExtractor:
         else:
             filtered = {p: f for p, f in all_phrases.items() if f >= 2}
         
-        # Insert into database
+        # Insert into database using bulk insert
         if not filtered:
             return 0
         
@@ -354,25 +354,36 @@ class PhraseExtractor:
                     frequency = EXCLUDED.frequency
             """)
             
-            inserted = 0
+            # Prepare batch data
+            batch_data = []
             for phrase, frequency in filtered.items():
                 n = len(phrase.split())
                 if n not in [2, 3, 4]:
                     continue
-                
-                try:
-                    conn.execute(insert_query, {
-                        'case_id': case_id,
-                        'document_id': document_id,
-                        'phrase': phrase,
-                        'n': n,
-                        'frequency': frequency
-                    })
-                    inserted += 1
-                except Exception as e:
-                    logger.warning(f"Failed to insert phrase '{phrase}': {e}")
+                batch_data.append({
+                    'case_id': case_id,
+                    'document_id': document_id,
+                    'phrase': phrase,
+                    'n': n,
+                    'frequency': frequency
+                })
             
-            conn.commit()
+            # Bulk insert
+            try:
+                if batch_data:
+                    conn.execute(insert_query, batch_data)
+                    conn.commit()
+                    inserted = len(batch_data)
+            except Exception as e:
+                logger.warning(f"Bulk phrase insert failed, using individual: {e}")
+                inserted = 0
+                for data in batch_data:
+                    try:
+                        conn.execute(insert_query, data)
+                        inserted += 1
+                    except Exception:
+                        pass
+                conn.commit()
         
         logger.debug(f"Extracted {len(all_phrases)} phrases, inserted {inserted} for case {case_id}")
         return inserted
