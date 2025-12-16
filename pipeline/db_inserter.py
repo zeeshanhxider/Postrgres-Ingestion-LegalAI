@@ -819,25 +819,77 @@ class DatabaseInserter:
         # Could also join them: ', '.join(rcw_references)
         return rcw_references[0] if rcw_references else None
     
+    def _resolve_taxonomy_id(self, conn, category: Optional[str], subcategory: Optional[str]) -> Optional[int]:
+        """
+        Resolve category/subcategory to taxonomy_id from legal_taxonomy table.
+        Creates new taxonomy entries if they don't exist (upsert behavior).
+        
+        Args:
+            conn: Database connection
+            category: Issue category (e.g., 'Criminal Law')
+            subcategory: Issue subcategory (e.g., 'Jury Selection and Batson Challenges')
+            
+        Returns:
+            taxonomy_id for the subcategory (or category if no subcategory), or None
+        """
+        if not category:
+            return None
+        
+        category = category.strip()
+        if not category:
+            return None
+        
+        # Step 1: Get or create the category entry
+        cat_query = text("""
+            INSERT INTO legal_taxonomy (parent_id, name, level_type, description)
+            VALUES (NULL, :name, 'category', 'Auto-created during ingestion')
+            ON CONFLICT (parent_id, name, level_type) DO UPDATE SET name = EXCLUDED.name
+            RETURNING taxonomy_id
+        """)
+        cat_result = conn.execute(cat_query, {'name': category})
+        category_id = cat_result.fetchone().taxonomy_id
+        
+        # If no subcategory, return the category_id
+        if not subcategory:
+            return category_id
+        
+        subcategory = subcategory.strip()
+        if not subcategory:
+            return category_id
+        
+        # Step 2: Get or create the subcategory entry linked to the category
+        subcat_query = text("""
+            INSERT INTO legal_taxonomy (parent_id, name, level_type, description)
+            VALUES (:parent_id, :name, 'subcategory', 'Auto-created during ingestion')
+            ON CONFLICT (parent_id, name, level_type) DO UPDATE SET name = EXCLUDED.name
+            RETURNING taxonomy_id
+        """)
+        subcat_result = conn.execute(subcat_query, {'parent_id': category_id, 'name': subcategory})
+        return subcat_result.fetchone().taxonomy_id
+
     def _insert_issue(self, conn, case_id: int, issue: Issue) -> int:
         """
         Insert an issue/decision record with full field population.
         Links RCW references from the issue to statutes_dim.
+        Links to legal_taxonomy via taxonomy_id.
         """
         # Resolve RCW reference (use first one as primary)
         rcw_reference = self._resolve_rcw_reference(conn, issue.rcw_references)
         
+        # Resolve taxonomy_id from category/subcategory
+        taxonomy_id = self._resolve_taxonomy_id(conn, issue.category, issue.subcategory)
+        
         query = text("""
             INSERT INTO issues_decisions (
-                case_id, category, subcategory, issue_summary,
-                rcw_reference, keywords, decision_stage, decision_summary,
-                appeal_outcome, winner_legal_role, winner_personal_role,
-                confidence_score, created_at, updated_at
+                case_id, issue_summary, rcw_reference, keywords, 
+                decision_stage, decision_summary, appeal_outcome, 
+                winner_legal_role, winner_personal_role,
+                confidence_score, taxonomy_id, created_at, updated_at
             ) VALUES (
-                :case_id, :category, :subcategory, :issue_summary,
-                :rcw_reference, :keywords, :decision_stage, :decision_summary,
-                :appeal_outcome, :winner_legal_role, :winner_personal_role,
-                :confidence_score, :created_at, :updated_at
+                :case_id, :issue_summary, :rcw_reference, :keywords,
+                :decision_stage, :decision_summary, :appeal_outcome,
+                :winner_legal_role, :winner_personal_role,
+                :confidence_score, :taxonomy_id, :created_at, :updated_at
             )
             RETURNING issue_id
         """)
@@ -846,8 +898,6 @@ class DatabaseInserter:
         
         result = conn.execute(query, {
             'case_id': case_id,
-            'category': issue.category or 'Other',
-            'subcategory': issue.subcategory or 'General',
             'issue_summary': issue.summary,
             'rcw_reference': rcw_reference,
             'keywords': issue.keywords,  # PostgreSQL array
@@ -857,6 +907,7 @@ class DatabaseInserter:
             'winner_legal_role': issue.winner,
             'winner_personal_role': issue.winner_personal_role,
             'confidence_score': issue.confidence_score,
+            'taxonomy_id': taxonomy_id,
             'created_at': now,
             'updated_at': now,
         })
