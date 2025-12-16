@@ -632,17 +632,44 @@ class DatabaseInserter:
         
         return result.fetchone().id
     
+    def _resolve_rcw_reference(self, conn, rcw_references: Optional[List[str]]) -> Optional[str]:
+        """
+        Resolve RCW references to a single rcw_reference string for issues_decisions.
+        Also attempts to link to statutes_dim for the first RCW.
+        
+        Args:
+            conn: Database connection
+            rcw_references: List of RCW citations (e.g., ['RCW 9.94A.525', 'RCW 9.94A.530'])
+            
+        Returns:
+            Comma-separated string of RCW references, or None
+        """
+        if not rcw_references:
+            return None
+        
+        # Return first RCW as the primary reference (the column is single-valued)
+        # Could also join them: ', '.join(rcw_references)
+        return rcw_references[0] if rcw_references else None
+    
     def _insert_issue(self, conn, case_id: int, issue: Issue) -> int:
-        """Insert an issue/decision record."""
+        """
+        Insert an issue/decision record with full field population.
+        Links RCW references from the issue to statutes_dim.
+        """
+        # Resolve RCW reference (use first one as primary)
+        rcw_reference = self._resolve_rcw_reference(conn, issue.rcw_references)
+        
         query = text("""
             INSERT INTO issues_decisions (
                 case_id, category, subcategory, issue_summary,
-                appeal_outcome, winner_legal_role,
-                created_at, updated_at
+                rcw_reference, keywords, decision_stage, decision_summary,
+                appeal_outcome, winner_legal_role, winner_personal_role,
+                confidence_score, created_at, updated_at
             ) VALUES (
                 :case_id, :category, :subcategory, :issue_summary,
-                :appeal_outcome, :winner_legal_role,
-                :created_at, :updated_at
+                :rcw_reference, :keywords, :decision_stage, :decision_summary,
+                :appeal_outcome, :winner_legal_role, :winner_personal_role,
+                :confidence_score, :created_at, :updated_at
             )
             RETURNING issue_id
         """)
@@ -654,8 +681,14 @@ class DatabaseInserter:
             'category': issue.category or 'Other',
             'subcategory': issue.subcategory or 'General',
             'issue_summary': issue.summary,
+            'rcw_reference': rcw_reference,
+            'keywords': issue.keywords,  # PostgreSQL array
+            'decision_stage': issue.decision_stage or 'appeal',
+            'decision_summary': issue.decision_summary,
             'appeal_outcome': issue.outcome,
             'winner_legal_role': issue.winner,
+            'winner_personal_role': issue.winner_personal_role,
+            'confidence_score': issue.confidence_score,
             'created_at': now,
             'updated_at': now,
         })

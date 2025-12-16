@@ -78,9 +78,16 @@ class Issue:
     """A legal issue addressed in the case."""
     category: str                       # "Criminal Law", "Civil Procedure", etc.
     subcategory: str                    # "Search & Seizure", "Summary Judgment", etc.
-    summary: str                        # Brief description of the issue
+    summary: str                        # Brief description of the issue (the legal question)
     outcome: Optional[str] = None       # "affirmed", "reversed", etc.
-    winner: Optional[str] = None        # "Appellant", "Respondent"
+    winner: Optional[str] = None        # "Appellant", "Respondent" (legal role)
+    # New fields for complete issues_decisions population
+    rcw_references: Optional[List[str]] = None  # Related RCW statutes (e.g., ["RCW 9.94A.525"])
+    keywords: Optional[List[str]] = None        # Keywords related to the issue
+    decision_stage: Optional[str] = None        # "trial", "appeal", "supreme_court"
+    decision_summary: Optional[str] = None      # How the court ruled (the ruling/answer)
+    winner_personal_role: Optional[str] = None  # "Employee", "Landlord", "State", etc.
+    confidence_score: Optional[float] = None    # LLM confidence (0.0-1.0)
 
 
 @dataclass

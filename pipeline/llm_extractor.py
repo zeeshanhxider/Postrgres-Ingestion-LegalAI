@@ -78,10 +78,18 @@ Extract this JSON structure:
         "key_statutes_cited": [
             "List of specific RCWs cited (e.g., 'RCW 9.94A.525', 'RCW 42.17A.765')"
         ],
-        "major_issues": [
+        "issues": [
             {{
-                "question": "Brief summary of the legal question (e.g., 'Was the warrantless search of the borrowed truck lawful?')",
-                "ruling": "How the court answered (e.g., 'Yes, the owner's consent overrode the borrower's objection.')"
+                "category": "Primary legal area: Criminal Law|Civil Procedure|Family Law|Constitutional Law|Evidence|Property|Contract|Tort|Employment|Administrative|Juvenile|Other",
+                "subcategory": "Specific sub-area (e.g., 'Search & Seizure', 'Child Custody', 'Summary Judgment', 'Sentencing', 'Hearsay')",
+                "question": "The legal question presented (e.g., 'Was the warrantless search of the borrowed truck lawful?')",
+                "ruling": "How the court ruled on this issue (e.g., 'Yes, the owner's consent overrode the borrower's expectation of privacy.')",
+                "outcome": "Affirmed|Reversed|Remanded|Dismissed|Mixed - for THIS specific issue",
+                "winner_legal_role": "Which legal role prevailed on this issue: Appellant|Respondent|Petitioner|State|Neither",
+                "winner_personal_role": "Personal/descriptive role of winner: Employee|Employer|Landlord|Tenant|Parent|Child|State|Defendant|Plaintiff|Insurer|Insured|null",
+                "related_rcws": ["Specific RCW statutes that apply to THIS issue (e.g., 'RCW 9.94A.525')"],
+                "keywords": ["2-4 key legal terms for this issue (e.g., 'fourth amendment', 'reasonable expectation', 'consent search')"],
+                "confidence": "0.0-1.0 confidence score for extraction accuracy"
             }}
         ]
     }},
@@ -483,14 +491,18 @@ class LLMExtractor:
         # legal_analysis -> issues and statutes
         if "legal_analysis" in llm_result and isinstance(llm_result["legal_analysis"], dict):
             analysis = llm_result["legal_analysis"]
-            # major_issues -> issues
-            if "major_issues" in analysis and "issues" not in llm_result:
+            # issues from legal_analysis (new format with rich fields)
+            if "issues" in analysis and "issues" not in llm_result:
+                llm_result["issues"] = analysis["issues"]
+            # major_issues -> issues (legacy format fallback)
+            elif "major_issues" in analysis and "issues" not in llm_result:
                 llm_result["issues"] = []
                 for issue in analysis.get("major_issues", []):
                     if isinstance(issue, dict):
                         llm_result["issues"].append({
                             "summary": issue.get("question", ""),
-                            "outcome": issue.get("ruling", ""),
+                            "decision_summary": issue.get("ruling", ""),
+                            "outcome": issue.get("outcome"),
                             "category": "Other"
                         })
             # key_statutes_cited -> statutes
@@ -577,16 +589,34 @@ class LLMExtractor:
                     title=s.get("title")
                 ))
         
-        # Issues
+        # Issues - map all fields including new rich extraction fields
         for i in llm_result.get("issues", []):
-            if isinstance(i, dict) and i.get("summary"):
-                case.issues.append(Issue(
-                    category=i.get("category", "Other"),
-                    subcategory=i.get("subcategory", "General"),
-                    summary=i["summary"],
-                    outcome=i.get("outcome"),
-                    winner=i.get("winner")
-                ))
+            if isinstance(i, dict):
+                # Handle both "summary" and "question" field names
+                summary = i.get("summary") or i.get("question")
+                if summary:
+                    # Parse confidence score
+                    confidence = None
+                    if i.get("confidence"):
+                        try:
+                            confidence = float(i["confidence"])
+                        except (ValueError, TypeError):
+                            pass
+                    
+                    case.issues.append(Issue(
+                        category=i.get("category", "Other"),
+                        subcategory=i.get("subcategory", "General"),
+                        summary=summary,
+                        outcome=i.get("outcome"),
+                        winner=i.get("winner") or i.get("winner_legal_role"),
+                        # New fields
+                        rcw_references=i.get("related_rcws") or i.get("rcw_references"),
+                        keywords=i.get("keywords"),
+                        decision_stage=i.get("decision_stage", "appeal"),
+                        decision_summary=i.get("ruling") or i.get("decision_summary"),
+                        winner_personal_role=i.get("winner_personal_role"),
+                        confidence_score=confidence
+                    ))
         
         case.extraction_timestamp = datetime.now()
         case.llm_model = self.model
