@@ -129,16 +129,22 @@ class DatabaseInserter:
             case: ExtractedCase object with all data
             
         Returns:
-            case_id if successful, None if failed
+            case_id if successful, None if failed, -1 if duplicate updated
         """
         try:
             with self.db.connect() as conn:
                 trans = conn.begin()
                 
                 try:
-                    # 1. Insert main case record
-                    case_id = self._insert_case_record(conn, case)
-                    logger.info(f"Inserted case with ID: {case_id}")
+                    # 1. Insert main case record (returns tuple: case_id, was_inserted)
+                    case_id, was_inserted = self._insert_case_record(conn, case)
+                    
+                    if was_inserted:
+                        logger.info(f"Inserted case with ID: {case_id}")
+                    else:
+                        # Duplicate - delete old related records before re-inserting
+                        logger.info(f"Updating duplicate case {case_id} - clearing old related records")
+                        self._clear_related_records(conn, case_id)
                     
                     # 2. Insert parties
                     for party in case.parties:
@@ -175,9 +181,10 @@ class DatabaseInserter:
                     
                     # 8. Run RAG processing if enabled
                     if self.enable_rag and case.full_text:
-                        self._run_rag_processing(case_id, case)
+                        self._run_rag_processing(case_id, case, clear_existing=not was_inserted)
                     
-                    return case_id
+                    # Return -1 for duplicates (updated), positive case_id for new inserts
+                    return case_id if was_inserted else -1
                     
                 except Exception as e:
                     trans.rollback()
@@ -188,12 +195,59 @@ class DatabaseInserter:
             logger.error(f"Database error: {e}")
             return None
     
-    def _run_rag_processing(self, case_id: int, case: ExtractedCase):
+    def _clear_related_records(self, conn, case_id: int):
+        """Clear all related records for a case (for duplicate updates)."""
+        tables = [
+            'parties',
+            'attorneys', 
+            'case_judges',
+            'citation_edges',
+            'statute_citations',
+            'issues_decisions'
+        ]
+        for table in tables:
+            try:
+                if table == 'citation_edges':
+                    conn.execute(text(f"DELETE FROM {table} WHERE source_case_id = :case_id"), {'case_id': case_id})
+                else:
+                    conn.execute(text(f"DELETE FROM {table} WHERE case_id = :case_id"), {'case_id': case_id})
+            except Exception as e:
+                logger.warning(f"Could not clear {table} for case {case_id}: {e}")
+    
+    def _clear_rag_records(self, case_id: int):
+        """Clear RAG records for a case (chunks, sentences, words, phrases)."""
+        try:
+            with self.db.connect() as conn:
+                trans = conn.begin()
+                try:
+                    # Delete in order due to foreign keys
+                    conn.execute(text("DELETE FROM word_occurrence WHERE sentence_id IN (SELECT sentence_id FROM case_sentences WHERE chunk_id IN (SELECT chunk_id FROM case_chunks WHERE case_id = :case_id))"), {'case_id': case_id})
+                    conn.execute(text("DELETE FROM case_sentences WHERE chunk_id IN (SELECT chunk_id FROM case_chunks WHERE case_id = :case_id)"), {'case_id': case_id})
+                    conn.execute(text("DELETE FROM case_phrases WHERE case_id = :case_id"), {'case_id': case_id})
+                    conn.execute(text("DELETE FROM case_chunks WHERE case_id = :case_id"), {'case_id': case_id})
+                    trans.commit()
+                    logger.info(f"Cleared existing RAG records for case {case_id}")
+                except Exception as e:
+                    trans.rollback()
+                    logger.warning(f"Could not clear RAG records for case {case_id}: {e}")
+        except Exception as e:
+            logger.warning(f"RAG cleanup connection error for case {case_id}: {e}")
+    
+    def _run_rag_processing(self, case_id: int, case: ExtractedCase, clear_existing: bool = False):
         """
         Run RAG processing for a case.
         Creates chunks, sentences, words, phrases, and embeddings.
+        
+        Args:
+            case_id: The case ID
+            case: ExtractedCase object
+            clear_existing: If True, clear existing RAG records first (for duplicates)
         """
         try:
+            # Clear existing RAG records if this is a duplicate update
+            if clear_existing:
+                self._clear_rag_records(case_id)
+            
             # Lazy-load RAG processor with default settings
             if self._rag_processor is None:
                 from .rag_processor import create_rag_processor
@@ -276,7 +330,37 @@ class DatabaseInserter:
                 :extraction_timestamp, :processing_status,
                 :created_at, :updated_at
             )
-            RETURNING case_id
+            ON CONFLICT (case_file_id, court_level) DO UPDATE SET
+                title = EXCLUDED.title,
+                court = EXCLUDED.court,
+                district = EXCLUDED.district,
+                county = EXCLUDED.county,
+                docket_number = EXCLUDED.docket_number,
+                source_docket_number = EXCLUDED.source_docket_number,
+                appeal_published_date = EXCLUDED.appeal_published_date,
+                published = EXCLUDED.published,
+                summary = EXCLUDED.summary,
+                full_text = EXCLUDED.full_text,
+                full_embedding = EXCLUDED.full_embedding,
+                source_url = EXCLUDED.source_url,
+                case_info_url = EXCLUDED.case_info_url,
+                overall_case_outcome = EXCLUDED.overall_case_outcome,
+                appeal_outcome = EXCLUDED.appeal_outcome,
+                winner_legal_role = EXCLUDED.winner_legal_role,
+                winner_personal_role = EXCLUDED.winner_personal_role,
+                publication_status = EXCLUDED.publication_status,
+                decision_year = EXCLUDED.decision_year,
+                decision_month = EXCLUDED.decision_month,
+                case_type = EXCLUDED.case_type,
+                source_file = EXCLUDED.source_file,
+                source_file_path = EXCLUDED.source_file_path,
+                court_id = EXCLUDED.court_id,
+                case_type_id = EXCLUDED.case_type_id,
+                stage_type_id = EXCLUDED.stage_type_id,
+                extraction_timestamp = EXCLUDED.extraction_timestamp,
+                processing_status = EXCLUDED.processing_status,
+                updated_at = EXCLUDED.updated_at
+            RETURNING case_id, (xmax = 0) AS inserted
         """)
         
         now = datetime.now()
@@ -334,7 +418,13 @@ class DatabaseInserter:
         
         result = conn.execute(query, params)
         row = result.fetchone()
-        return row.case_id
+        case_id = row.case_id
+        was_inserted = row.inserted  # True if new insert, False if update
+        
+        if not was_inserted:
+            logger.info(f"Duplicate case {meta.case_number} found - updated with newer data (case_id: {case_id})")
+        
+        return case_id, was_inserted
     
     def _get_or_create_court_id(self, conn, case: ExtractedCase, meta) -> Optional[int]:
         """
@@ -695,27 +785,52 @@ class DatabaseInserter:
         
         return result.fetchone().issue_id
     
-    def insert_batch(self, cases: List[ExtractedCase]) -> Dict[str, int]:
+    def insert_batch(self, cases: List[ExtractedCase], max_workers: int = 4) -> Dict[str, int]:
         """
-        Insert a batch of cases.
+        Insert a batch of cases in parallel.
         
         Args:
             cases: List of ExtractedCase objects
+            max_workers: Number of parallel workers for DB+RAG processing
             
         Returns:
             Dictionary with success/failure counts
         """
-        results = {'success': 0, 'failed': 0, 'case_ids': []}
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         
-        for case in cases:
-            case_id = self.insert_case(case)
-            if case_id:
-                results['success'] += 1
-                results['case_ids'].append(case_id)
-            else:
-                results['failed'] += 1
+        results = {'success': 0, 'failed': 0, 'case_ids': [], 'duplicates': 0}
         
-        logger.info(f"Batch insert complete: {results['success']} success, {results['failed']} failed")
+        if not cases:
+            return results
+        
+        def process_single_case(case: ExtractedCase) -> Optional[int]:
+            """Process a single case (insert + RAG)."""
+            return self.insert_case(case)
+        
+        # Process cases in parallel
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_case = {executor.submit(process_single_case, case): case for case in cases}
+            
+            for future in as_completed(future_to_case):
+                case = future_to_case[future]
+                try:
+                    case_id = future.result()
+                    if case_id:
+                        if case_id == -1:  # Duplicate marker
+                            results['duplicates'] += 1
+                        else:
+                            results['success'] += 1
+                            results['case_ids'].append(case_id)
+                    else:
+                        results['failed'] += 1
+                except Exception as e:
+                    logger.error(f"Case processing error for {case.metadata.case_number}: {e}")
+                    results['failed'] += 1
+        
+        logger.info(
+            f"Batch insert complete: {results['success']} success, "
+            f"{results['duplicates']} duplicates updated, {results['failed']} failed"
+        )
         return results
     
     def get_case_count(self) -> int:

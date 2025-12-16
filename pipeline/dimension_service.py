@@ -113,10 +113,11 @@ class DimensionService:
             if row:
                 case_type_id = row.case_type_id
             else:
-                # Create new
+                # Create new with ON CONFLICT for race condition safety
                 insert_query = text("""
                     INSERT INTO case_types (case_type, description, jurisdiction, created_at)
                     VALUES (:case_type, :description, :jurisdiction, NOW())
+                    ON CONFLICT (case_type) DO UPDATE SET case_type = EXCLUDED.case_type
                     RETURNING case_type_id
                 """)
                 result = conn.execute(insert_query, {
@@ -174,10 +175,11 @@ class DimensionService:
             if row:
                 stage_type_id = row.stage_type_id
             else:
-                # Create new
+                # Create new with ON CONFLICT for race condition safety
                 insert_query = text("""
                     INSERT INTO stage_types (stage_type, description, level, created_at)
                     VALUES (:stage_type, :description, :level, NOW())
+                    ON CONFLICT (stage_type) DO UPDATE SET stage_type = EXCLUDED.stage_type
                     RETURNING stage_type_id
                 """)
                 result = conn.execute(insert_query, {
@@ -217,10 +219,11 @@ class DimensionService:
             if row:
                 doc_type_id = row.document_type_id
             else:
-                # Create new
+                # Create new with ON CONFLICT for race condition safety
                 insert_query = text("""
                     INSERT INTO document_types (document_type, description, has_decision, role, created_at)
                     VALUES (:document_type, :description, :has_decision, :role, NOW())
+                    ON CONFLICT (document_type) DO UPDATE SET document_type = EXCLUDED.document_type
                     RETURNING document_type_id
                 """)
                 result = conn.execute(insert_query, {
@@ -278,10 +281,11 @@ class DimensionService:
             if row:
                 court_id = row.court_id
             else:
-                # Create new
+                # Create new with ON CONFLICT for race condition safety
                 insert_query = text("""
                     INSERT INTO courts_dim (court, level, jurisdiction, district, county, court_type)
                     VALUES (:court, :level, :jurisdiction, :district, :county, :court_type)
+                    ON CONFLICT (court) DO UPDATE SET court = EXCLUDED.court
                     RETURNING court_id
                 """)
                 

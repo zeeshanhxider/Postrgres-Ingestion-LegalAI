@@ -356,20 +356,57 @@ class WordProcessor:
             return
         
         with self.db.connect() as conn:
-            # Use executemany for bulk insert - much faster than individual inserts
-            insert_query = text("""
-                INSERT INTO word_occurrence (word_id, case_id, chunk_id, sentence_id, document_id, position)
-                VALUES (:word_id, :case_id, :chunk_id, :sentence_id, :document_id, :position)
-                ON CONFLICT (word_id, sentence_id, position) DO NOTHING
-            """)
+            # Filter out any occurrences with None word_id (shouldn't happen, but safety check)
+            valid_occurrences = [occ for occ in self._pending_occurrences if occ.get('word_id') is not None]
             
+            if not valid_occurrences:
+                self._pending_occurrences = []
+                return
+            
+            # Use raw SQL with VALUES list for true bulk insert
+            # Build the VALUES clause manually for bulk insert
             try:
-                conn.execute(insert_query, self._pending_occurrences)
+                # Batch in groups of 500 to avoid parameter limits
+                batch_size = 500
+                for i in range(0, len(valid_occurrences), batch_size):
+                    batch = valid_occurrences[i:i + batch_size]
+                    
+                    # Build VALUES clause: ($1, $2, ...), ($3, $4, ...), ...
+                    values_parts = []
+                    params = {}
+                    for idx, occ in enumerate(batch):
+                        prefix = f"p{idx}_"
+                        values_parts.append(
+                            f"(:{prefix}word_id, :{prefix}case_id, :{prefix}chunk_id, "
+                            f":{prefix}sentence_id, :{prefix}document_id, :{prefix}position)"
+                        )
+                        params[f"{prefix}word_id"] = occ['word_id']
+                        params[f"{prefix}case_id"] = occ['case_id']
+                        params[f"{prefix}chunk_id"] = occ['chunk_id']
+                        params[f"{prefix}sentence_id"] = occ['sentence_id']
+                        params[f"{prefix}document_id"] = occ['document_id']
+                        params[f"{prefix}position"] = occ['position']
+                    
+                    values_clause = ", ".join(values_parts)
+                    insert_sql = f"""
+                        INSERT INTO word_occurrence (word_id, case_id, chunk_id, sentence_id, document_id, position)
+                        VALUES {values_clause}
+                        ON CONFLICT (word_id, sentence_id, position) DO NOTHING
+                    """
+                    conn.execute(text(insert_sql), params)
+                
                 conn.commit()
             except Exception as e:
                 # Fallback to individual inserts if bulk fails
                 logger.warning(f"Bulk insert failed, using individual: {e}")
-                for occ in self._pending_occurrences:
+                conn.rollback()
+                
+                insert_query = text("""
+                    INSERT INTO word_occurrence (word_id, case_id, chunk_id, sentence_id, document_id, position)
+                    VALUES (:word_id, :case_id, :chunk_id, :sentence_id, :document_id, :position)
+                    ON CONFLICT (word_id, sentence_id, position) DO NOTHING
+                """)
+                for occ in valid_occurrences:
                     try:
                         conn.execute(insert_query, occ)
                     except Exception:

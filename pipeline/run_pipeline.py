@@ -132,7 +132,7 @@ def process_batch(args):
         )
     
     successful = [c for c in cases if c.extraction_successful]
-    results = inserter.insert_batch(successful)
+    results = inserter.insert_batch(successful, max_workers=max_workers)
     
     print(f"\n{'='*50}")
     print(f"Batch Processing Complete")
@@ -140,6 +140,7 @@ def process_batch(args):
     print(f"  Total PDFs: {len(cases)}")
     print(f"  Extracted: {len(successful)}")
     print(f"  Inserted: {results['success']}")
+    print(f"  Duplicates Updated: {results.get('duplicates', 0)}")
     print(f"  Failed: {results['failed']}")
     if args.enable_rag:
         print(f"  RAG mode: chunks={args.chunk_embeddings}, phrases={args.phrase_filter}")
