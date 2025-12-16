@@ -41,6 +41,7 @@ CASE_TABLES = [
     "courts_dim",
     "case_types",
     "stage_types",
+    "statutes_dim",
 ]
 
 # Tables to NEVER touch (briefs-related)

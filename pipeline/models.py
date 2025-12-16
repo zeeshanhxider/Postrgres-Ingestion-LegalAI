@@ -40,6 +40,7 @@ class Party:
     name: str
     role: str                           # "Appellant", "Respondent", "Petitioner", etc.
     party_type: Optional[str] = None    # "Individual", "Corporation", "Government", etc.
+    personal_role: Optional[str] = None # "Employee", "Employer", "Landlord", "Tenant", etc.
 
 
 @dataclass

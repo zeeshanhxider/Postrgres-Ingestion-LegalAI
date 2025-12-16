@@ -486,8 +486,8 @@ class DatabaseInserter:
     def _insert_party(self, conn, case_id: int, party: Party) -> int:
         """Insert a party record."""
         query = text("""
-            INSERT INTO parties (case_id, name, legal_role, party_type, created_at)
-            VALUES (:case_id, :name, :legal_role, :party_type, :created_at)
+            INSERT INTO parties (case_id, name, legal_role, personal_role, party_type, created_at)
+            VALUES (:case_id, :name, :legal_role, :personal_role, :party_type, :created_at)
             RETURNING party_id
         """)
         
@@ -495,6 +495,7 @@ class DatabaseInserter:
             'case_id': case_id,
             'name': party.name,
             'legal_role': party.role,
+            'personal_role': getattr(party, 'personal_role', None),
             'party_type': party.party_type,
             'created_at': datetime.now(),
         })
@@ -583,18 +584,19 @@ class DatabaseInserter:
         Returns (code, title, section, subsection)
         
         Examples:
-        - "RCW 69.50.4013(1)" -> ("RCW", "69", "50.4013", "1")
+        - "RCW 69.50.4013(1)" -> ("RCW", "69", "50.4013", "(1)")
         - "RCW 9.94A.525" -> ("RCW", "9", "94A.525", None)
-        - "RCW 42.17A.765(3)(a)" -> ("RCW", "42", "17A.765", "3)(a")
+        - "RCW 42.17A.765(3)(a)" -> ("RCW", "42", "17A.765", "(3)(a)")
         """
-        # Pattern: RCW <title>.<section>(optional subsection)
-        pattern = r'^(RCW)\s+(\d+)\.([0-9A-Za-z.]+)(?:\(([^)]+(?:\)[^)]*)*)\))?'
+        # Pattern: RCW <title>.<section>(optional subsection with parentheses)
+        pattern = r'^(RCW)\s+(\d+)\.([0-9A-Za-z.]+)((?:\([^)]+\))+)?'
         match = re.match(pattern, citation.strip(), re.IGNORECASE)
         
         if match:
             code = match.group(1).upper()
             title = match.group(2)
             section = match.group(3)
+            # Keep parentheses in subsection: "(1)(a)" not "1)(a"
             subsection = match.group(4) if match.group(4) else None
             return (code, title, section, subsection)
         

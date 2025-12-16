@@ -51,7 +51,8 @@ Extract this JSON structure:
             "name": "Full party name (e.g., 'Justin Dean Vanhollebeke')",
             "appellate_role": "Appellant|Respondent|Petitioner|Cross-Appellant",
             "trial_role": "Plaintiff|Defendant|State|Intervenor|null",
-            "type": "Individual|Government|Corporation|Organization|Union"
+            "type": "Individual|Government|Corporation|Organization|Union",
+            "personal_role": "Descriptive role: Employee|Employer|Landlord|Tenant|Parent|Child|Patient|Doctor|Insurer|Insured|Buyer|Seller|Homeowner|Contractor|Student|School|null"
         }}
     ],
     "legal_representation": [
@@ -541,11 +542,16 @@ class LLMExtractor:
                 if p.get("trial_role") and p.get("trial_role") != "null":
                     role = f"{role} ({p.get('trial_role')})"
                 party_type = p.get("party_type") or p.get("type")
+                personal_role = p.get("personal_role")
+                # Normalize null string to None
+                if personal_role and personal_role.lower() == "null":
+                    personal_role = None
                 if name:
                     case.parties.append(Party(
                         name=name,
                         role=role,
-                        party_type=party_type
+                        party_type=party_type,
+                        personal_role=personal_role
                     ))
         
         # Attorneys (handles both old and new schema field names)
