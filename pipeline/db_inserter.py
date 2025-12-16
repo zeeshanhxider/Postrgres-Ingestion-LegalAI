@@ -517,6 +517,7 @@ class DatabaseInserter:
         1. Exact match with subsection
         2. Match without subsection
         3. Partial section match (for cases like "9.94A" matching "9.94A.525")
+        4. If no match found, CREATE the statute in statutes_dim
         """
         code, title, section, subsection = self._parse_statute_citation(citation)
         
@@ -578,6 +579,35 @@ class DatabaseInserter:
         })
         row = result.fetchone()
         if row:
+            return row.statute_id
+        
+        # Strategy 4: Create new statute entry if not found
+        display_text = f"{code} {title}.{section}"
+        if subsection:
+            display_text += f"({subsection})"
+        
+        insert_query = text("""
+            INSERT INTO statutes_dim (
+                jurisdiction, code, title, section, subsection, display_text
+            ) VALUES (
+                'WA', :code, :title, :section, :subsection, :display_text
+            )
+            ON CONFLICT (jurisdiction, code, title, section, COALESCE(subsection, '')) DO UPDATE
+            SET display_text = EXCLUDED.display_text
+            RETURNING statute_id
+        """)
+        
+        result = conn.execute(insert_query, {
+            'code': code,
+            'title': title,
+            'section': section,
+            'subsection': subsection,
+            'display_text': display_text
+        })
+        
+        row = result.fetchone()
+        if row:
+            logger.info(f"Created new statute in statutes_dim: {display_text} (ID: {row.statute_id})")
             return row.statute_id
         
         return None
