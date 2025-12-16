@@ -106,7 +106,8 @@ class RAGProcessor:
         self,
         case_id: int,
         full_text: str,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        document_id: Optional[int] = None
     ) -> RAGProcessingResult:
         """
         Process a case through the complete RAG pipeline.
@@ -115,6 +116,7 @@ class RAGProcessor:
             case_id: Database ID of the case
             full_text: Full text content of the case
             metadata: Optional metadata dict (for dimension resolution)
+            document_id: Optional document ID to associate with chunks/sentences
             
         Returns:
             RAGProcessingResult with processing statistics
@@ -134,7 +136,7 @@ class RAGProcessor:
             logger.info(f"Created {len(chunks)} chunks")
             
             # Step 2: Insert chunks and get IDs
-            chunk_ids = self._insert_chunks(case_id, chunks)
+            chunk_ids = self._insert_chunks(case_id, chunks, document_id=document_id)
             chunks_created = len(chunk_ids)
             
             # Step 3: Generate chunk embeddings based on mode
@@ -149,6 +151,7 @@ class RAGProcessor:
                 try:
                     sentence_results = self.sentence_processor.process_chunk_sentences(
                         chunk_id, chunk.text, case_id=case_id,
+                        document_id=document_id,
                         global_sentence_counter=global_sentence_order
                     )
                     sentence_ids = [s['id'] for s in sentence_results]
@@ -203,7 +206,8 @@ class RAGProcessor:
     def _insert_chunks(
         self,
         case_id: int,
-        chunks: List[TextChunk]
+        chunks: List[TextChunk],
+        document_id: Optional[int] = None
     ) -> List[int]:
         """Insert chunks into database and return their IDs."""
         chunk_ids = []
@@ -212,12 +216,13 @@ class RAGProcessor:
             for chunk in chunks:
                 result = conn.execute(text("""
                     INSERT INTO case_chunks (
-                        case_id, chunk_order, section, text
+                        case_id, document_id, chunk_order, section, text
                     )
-                    VALUES (:case_id, :chunk_order, :section, :text)
+                    VALUES (:case_id, :document_id, :chunk_order, :section, :text)
                     RETURNING chunk_id
                 """), {
                     'case_id': case_id,
+                    'document_id': document_id,
                     'chunk_order': chunk.chunk_index,
                     'section': chunk.section_type,
                     'text': chunk.text
@@ -302,10 +307,11 @@ class RAGProcessor:
         self,
         case_id: int,
         full_text: str,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        document_id: Optional[int] = None
     ) -> RAGProcessingResult:
         """Synchronous version of process_case (same as process_case now)."""
-        return self.process_case(case_id, full_text, metadata)
+        return self.process_case(case_id, full_text, metadata, document_id=document_id)
 
 
 # Alias for backward compatibility

@@ -314,3 +314,50 @@ class DimensionService:
             'document_types': {},
             'courts': {}
         }
+    
+    def get_stage_type_id(self, opinion_type: Optional[str] = None) -> Optional[int]:
+        """Simple getter for stage_type_id based on opinion_type string."""
+        return self.get_or_create_stage_type(opinion_type=opinion_type)
+    
+    def get_document_type_id(self, doc_type_name: str = 'Opinion') -> int:
+        """
+        Get or create document_type_id for a given document type name.
+        
+        Args:
+            doc_type_name: Document type name (e.g., 'Opinion', 'Brief')
+            
+        Returns:
+            document_type_id
+        """
+        # Check cache
+        if doc_type_name in self._cache['document_types']:
+            return self._cache['document_types'][doc_type_name]
+        
+        with self.db.connect() as conn:
+            # Try to find existing
+            query = text("SELECT document_type_id FROM document_types WHERE document_type = :document_type")
+            result = conn.execute(query, {'document_type': doc_type_name})
+            row = result.fetchone()
+            
+            if row:
+                doc_type_id = row.document_type_id
+            else:
+                # Create new with ON CONFLICT for race condition safety
+                insert_query = text("""
+                    INSERT INTO document_types (document_type, description, has_decision, role, created_at)
+                    VALUES (:document_type, :description, :has_decision, :role, NOW())
+                    ON CONFLICT (document_type) DO UPDATE SET document_type = EXCLUDED.document_type
+                    RETURNING document_type_id
+                """)
+                result = conn.execute(insert_query, {
+                    'document_type': doc_type_name,
+                    'description': f"{doc_type_name} document",
+                    'has_decision': doc_type_name.lower() == 'opinion',
+                    'role': 'court' if doc_type_name.lower() == 'opinion' else 'party'
+                })
+                doc_type_id = result.fetchone().document_type_id
+                conn.commit()
+                logger.info(f"Created document type: {doc_type_name} (ID: {doc_type_id})")
+            
+            self._cache['document_types'][doc_type_name] = doc_type_id
+            return doc_type_id

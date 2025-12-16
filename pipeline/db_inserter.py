@@ -146,32 +146,37 @@ class DatabaseInserter:
                         logger.info(f"Updating duplicate case {case_id} - clearing old related records")
                         self._clear_related_records(conn, case_id)
                     
-                    # 2. Insert parties
+                    # 2. Insert document record for the source PDF
+                    document_id = self._insert_document(conn, case_id, case)
+                    if document_id:
+                        logger.info(f"Inserted document with ID: {document_id}")
+                    
+                    # 3. Insert parties
                     for party in case.parties:
                         self._insert_party(conn, case_id, party)
                     logger.info(f"Inserted {len(case.parties)} parties")
                     
-                    # 3. Insert attorneys
+                    # 4. Insert attorneys
                     for attorney in case.attorneys:
                         self._insert_attorney(conn, case_id, attorney)
                     logger.info(f"Inserted {len(case.attorneys)} attorneys")
                     
-                    # 4. Insert judges
+                    # 5. Insert judges
                     for judge in case.judges:
                         self._insert_judge(conn, case_id, judge)
                     logger.info(f"Inserted {len(case.judges)} judges")
                     
-                    # 5. Insert citations
+                    # 6. Insert citations
                     for citation in case.citations:
                         self._insert_citation(conn, case_id, citation)
                     logger.info(f"Inserted {len(case.citations)} citations")
                     
-                    # 6. Insert statutes
+                    # 7. Insert statutes
                     for statute in case.statutes:
                         self._insert_statute(conn, case_id, statute)
                     logger.info(f"Inserted {len(case.statutes)} statutes")
                     
-                    # 7. Insert issues
+                    # 8. Insert issues
                     for issue in case.issues:
                         self._insert_issue(conn, case_id, issue)
                     logger.info(f"Inserted {len(case.issues)} issues")
@@ -179,9 +184,9 @@ class DatabaseInserter:
                     trans.commit()
                     logger.info(f"Successfully committed case {case_id}")
                     
-                    # 8. Run RAG processing if enabled
+                    # 9. Run RAG processing if enabled (pass document_id)
                     if self.enable_rag and case.full_text:
-                        self._run_rag_processing(case_id, case, clear_existing=not was_inserted)
+                        self._run_rag_processing(case_id, case, clear_existing=not was_inserted, document_id=document_id)
                     
                     # Return -1 for duplicates (updated), positive case_id for new inserts
                     return case_id if was_inserted else -1
@@ -198,6 +203,7 @@ class DatabaseInserter:
     def _clear_related_records(self, conn, case_id: int):
         """Clear all related records for a case (for duplicate updates)."""
         tables = [
+            'documents',
             'parties',
             'attorneys', 
             'case_judges',
@@ -213,6 +219,74 @@ class DatabaseInserter:
                     conn.execute(text(f"DELETE FROM {table} WHERE case_id = :case_id"), {'case_id': case_id})
             except Exception as e:
                 logger.warning(f"Could not clear {table} for case {case_id}: {e}")
+    
+    def _insert_document(self, conn, case_id: int, case: ExtractedCase) -> Optional[int]:
+        """
+        Insert a document record for the source PDF.
+        
+        Args:
+            conn: Database connection
+            case_id: Case ID
+            case: ExtractedCase object
+            
+        Returns:
+            document_id if successful, None otherwise
+        """
+        meta = case.metadata
+        
+        # Get stage_type_id and document_type_id
+        dim_service = self._get_dimension_service(conn)
+        stage_type_id = dim_service.get_stage_type_id(meta.opinion_type)
+        document_type_id = dim_service.get_document_type_id('Opinion')
+        
+        # Calculate page count from full_text if available
+        page_count = getattr(case, 'page_count', None)
+        
+        # Calculate file size if path available
+        file_size = None
+        if case.source_file_path:
+            import os
+            try:
+                file_size = os.path.getsize(case.source_file_path)
+            except:
+                pass
+        
+        query = text("""
+            INSERT INTO documents (
+                case_id, stage_type_id, document_type_id,
+                title, source_url, local_path,
+                file_size, page_count, processing_status,
+                created_at, updated_at
+            ) VALUES (
+                :case_id, :stage_type_id, :document_type_id,
+                :title, :source_url, :local_path,
+                :file_size, :page_count, :processing_status,
+                :created_at, :updated_at
+            )
+            RETURNING document_id
+        """)
+        
+        now = datetime.now()
+        
+        try:
+            result = conn.execute(query, {
+                'case_id': case_id,
+                'stage_type_id': stage_type_id,
+                'document_type_id': document_type_id,
+                'title': meta.case_title or meta.pdf_filename or 'Unknown',
+                'source_url': meta.pdf_url,
+                'local_path': case.source_file_path,
+                'file_size': file_size,
+                'page_count': page_count,
+                'processing_status': 'completed',
+                'created_at': now,
+                'updated_at': now,
+            })
+            row = result.fetchone()
+            return row.document_id if row else None
+        except Exception as e:
+            logger.warning(f"Could not insert document: {e}")
+            return None
     
     def _clear_rag_records(self, case_id: int):
         """Clear RAG records for a case (chunks, sentences, words, phrases)."""
@@ -233,7 +307,7 @@ class DatabaseInserter:
         except Exception as e:
             logger.warning(f"RAG cleanup connection error for case {case_id}: {e}")
     
-    def _run_rag_processing(self, case_id: int, case: ExtractedCase, clear_existing: bool = False):
+    def _run_rag_processing(self, case_id: int, case: ExtractedCase, clear_existing: bool = False, document_id: Optional[int] = None):
         """
         Run RAG processing for a case.
         Creates chunks, sentences, words, phrases, and embeddings.
@@ -242,6 +316,7 @@ class DatabaseInserter:
             case_id: The case ID
             case: ExtractedCase object
             clear_existing: If True, clear existing RAG records first (for duplicates)
+            document_id: The document ID to associate with RAG records
         """
         try:
             # Clear existing RAG records if this is a duplicate update
@@ -257,7 +332,8 @@ class DatabaseInserter:
             result = self._rag_processor.process_case_sync(
                 case_id,
                 case.full_text,
-                metadata=None  # Could pass case.metadata if needed
+                metadata=None,  # Could pass case.metadata if needed
+                document_id=document_id
             )
             
             logger.info(
@@ -676,7 +752,7 @@ class DatabaseInserter:
         # Strategy 4: Create new statute entry if not found
         display_text = f"{code} {title}.{section}"
         if subsection:
-            display_text += f"({subsection})"
+            display_text += subsection  # subsection already includes parentheses, e.g., "(1)(a)"
         
         insert_query = text("""
             INSERT INTO statutes_dim (

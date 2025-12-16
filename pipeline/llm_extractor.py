@@ -44,7 +44,8 @@ Extract this JSON structure:
     "outcome": {{
         "disposition": "Affirmed|Reversed|Remanded|Dismissed|Affirmed in part/Reversed in part|Other",
         "details": "Specific details (e.g., 'Conviction affirmed, but remanded for resentencing due to offender score error')",
-        "prevailing_party": "Appellant|Respondent|Petitioner|Plaintiff|Defendant|Split/Remanded|Neither"
+        "prevailing_party": "Appellant|Respondent|Petitioner|Plaintiff|Defendant|Split/Remanded|Neither",
+        "winner_personal_role": "Descriptive role of the prevailing party: Employee|Employer|Landlord|Tenant|Parent|Child|Patient|Doctor|Insurer|Insured|Homeowner|Contractor|State|Defendant|Plaintiff|null"
     }},
     "parties_parsed": [
         {{
@@ -486,6 +487,8 @@ class LLMExtractor:
                 llm_result["outcome_detail"] = out.get("details")
             if not llm_result.get("winner_legal_role"):
                 llm_result["winner_legal_role"] = out.get("prevailing_party")
+            if not llm_result.get("winner_personal_role"):
+                llm_result["winner_personal_role"] = out.get("winner_personal_role")
         # case_category -> case_type
         if "case_category" in llm_result and not llm_result.get("case_type"):
             llm_result["case_type"] = llm_result["case_category"]
