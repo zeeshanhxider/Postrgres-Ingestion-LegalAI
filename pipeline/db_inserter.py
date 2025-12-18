@@ -819,10 +819,62 @@ class DatabaseInserter:
         # Could also join them: ', '.join(rcw_references)
         return rcw_references[0] if rcw_references else None
     
+    # Category normalization mapping - maps variations to canonical names
+    CATEGORY_NORMALIZATION = {
+        # Tort variations
+        'tort': 'Tort Law',
+        'tort law': 'Tort Law',
+        'torts': 'Tort Law',
+        # Criminal variations
+        'criminal': 'Criminal Law',
+        'criminal law': 'Criminal Law',
+        # Civil variations
+        'civil': 'Civil Procedure',
+        'civil law': 'Civil Procedure',
+        'civil procedure': 'Civil Procedure',
+        # Constitutional variations
+        'constitutional': 'Constitutional Law',
+        'constitutional law': 'Constitutional Law',
+        # Administrative variations
+        'administrative': 'Administrative Law',
+        'administrative law': 'Administrative Law',
+        'admin law': 'Administrative Law',
+        # Family variations
+        'family': 'Family Law',
+        'family law': 'Family Law',
+        'domestic': 'Family Law',
+        'domestic relations': 'Family Law',
+        # Property variations
+        'property': 'Property Law',
+        'property law': 'Property Law',
+        'real property': 'Property Law',
+        'real estate': 'Property Law',
+        # Contract variations
+        'contract': 'Contract Law',
+        'contract law': 'Contract Law',
+        'contracts': 'Contract Law',
+        # Employment variations
+        'employment': 'Employment Law',
+        'employment law': 'Employment Law',
+        'labor': 'Employment Law',
+        'labor law': 'Employment Law',
+        # Evidence variations
+        'evidence': 'Evidence',
+        'evidentiary': 'Evidence',
+    }
+    
+    def _normalize_category(self, category: str) -> str:
+        """Normalize category name to canonical form."""
+        if not category:
+            return category
+        lookup = category.strip().lower()
+        return self.CATEGORY_NORMALIZATION.get(lookup, category.strip())
+    
     def _resolve_taxonomy_id(self, conn, category: Optional[str], subcategory: Optional[str]) -> Optional[int]:
         """
         Resolve category/subcategory to taxonomy_id from legal_taxonomy table.
         Creates new taxonomy entries if they don't exist (upsert behavior).
+        Normalizes category names to canonical forms.
         
         Args:
             conn: Database connection
@@ -835,19 +887,31 @@ class DatabaseInserter:
         if not category:
             return None
         
-        category = category.strip()
+        # Normalize category to canonical form
+        category = self._normalize_category(category)
         if not category:
             return None
         
         # Step 1: Get or create the category entry
+        # Use COALESCE(-1) to match the unique index on (COALESCE(parent_id, -1), name, level_type)
         cat_query = text("""
-            INSERT INTO legal_taxonomy (parent_id, name, level_type, description)
-            VALUES (NULL, :name, 'category', 'Auto-created during ingestion')
-            ON CONFLICT (parent_id, name, level_type) DO UPDATE SET name = EXCLUDED.name
+            INSERT INTO legal_taxonomy (parent_id, name, level_type)
+            VALUES (NULL, :name, 'category')
+            ON CONFLICT (COALESCE(parent_id, -1), name, level_type) DO NOTHING
             RETURNING taxonomy_id
         """)
         cat_result = conn.execute(cat_query, {'name': category})
-        category_id = cat_result.fetchone().taxonomy_id
+        row = cat_result.fetchone()
+        
+        if row:
+            category_id = row.taxonomy_id
+        else:
+            # Entry already exists, fetch it
+            fetch_cat = text("""
+                SELECT taxonomy_id FROM legal_taxonomy 
+                WHERE parent_id IS NULL AND name = :name AND level_type = 'category'
+            """)
+            category_id = conn.execute(fetch_cat, {'name': category}).fetchone().taxonomy_id
         
         # If no subcategory, return the category_id
         if not subcategory:
@@ -859,13 +923,23 @@ class DatabaseInserter:
         
         # Step 2: Get or create the subcategory entry linked to the category
         subcat_query = text("""
-            INSERT INTO legal_taxonomy (parent_id, name, level_type, description)
-            VALUES (:parent_id, :name, 'subcategory', 'Auto-created during ingestion')
-            ON CONFLICT (parent_id, name, level_type) DO UPDATE SET name = EXCLUDED.name
+            INSERT INTO legal_taxonomy (parent_id, name, level_type)
+            VALUES (:parent_id, :name, 'subcategory')
+            ON CONFLICT (COALESCE(parent_id, -1), name, level_type) DO NOTHING
             RETURNING taxonomy_id
         """)
         subcat_result = conn.execute(subcat_query, {'parent_id': category_id, 'name': subcategory})
-        return subcat_result.fetchone().taxonomy_id
+        row = subcat_result.fetchone()
+        
+        if row:
+            return row.taxonomy_id
+        else:
+            # Entry already exists, fetch it
+            fetch_subcat = text("""
+                SELECT taxonomy_id FROM legal_taxonomy 
+                WHERE parent_id = :parent_id AND name = :name AND level_type = 'subcategory'
+            """)
+            return conn.execute(fetch_subcat, {'parent_id': category_id, 'name': subcategory}).fetchone().taxonomy_id
 
     def _insert_issue(self, conn, case_id: int, issue: Issue) -> int:
         """
