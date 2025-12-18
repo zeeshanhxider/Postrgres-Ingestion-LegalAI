@@ -9,6 +9,15 @@ Usage:
     # Process a batch
     python -m pipeline.run_pipeline --batch --pdf-dir downloads/Supreme_Court_Opinions --csv downloads/Supreme_Court_Opinions/metadata.csv
     
+    # Production batch with progress tracking (recommended for overnight runs)
+    python -m pipeline.run_pipeline --batch --pdf-dir downloads/Supreme_Court_Opinions --csv metadata.csv --job-name my_job
+    
+    # Resume interrupted job
+    python -m pipeline.run_pipeline --batch --pdf-dir downloads/Supreme_Court_Opinions --csv metadata.csv --resume logs/checkpoint_my_job.json
+    
+    # Retry failed files
+    python -m pipeline.run_pipeline --batch --pdf-dir downloads/Supreme_Court_Opinions --csv metadata.csv --retry-failed logs/failed_my_job.csv
+    
     # Control RAG options
     python -m pipeline.run_pipeline --pdf path/to/case.pdf --chunk-embeddings important --phrase-filter relaxed
 """
@@ -17,6 +26,7 @@ import argparse
 import logging
 import sys
 from pathlib import Path
+from typing import Optional
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -24,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from pipeline.config import Config
 from pipeline.case_processor import CaseProcessor
 from pipeline.db_inserter import DatabaseInserter
+from pipeline.progress_tracker import ProgressTracker, load_failed_files_csv
 
 # Configure logging
 logging.basicConfig(
@@ -98,8 +109,19 @@ def process_single_case(args):
 
 
 def process_batch(args):
-    """Process a batch of PDF files."""
+    """Process a batch of PDF files with progress tracking."""
     logger.info(f"Processing batch from: {args.pdf_dir}")
+    
+    # Initialize progress tracker
+    tracker = ProgressTracker(
+        output_dir="logs",
+        job_name=args.job_name
+    )
+    
+    # Load checkpoint if resuming
+    if args.resume:
+        if not tracker.load_checkpoint(args.resume):
+            logger.warning(f"Could not load checkpoint from {args.resume}, starting fresh")
     
     # Determine number of workers
     max_workers = 1 if args.sequential else args.workers
@@ -113,14 +135,62 @@ def process_batch(args):
         pdf_extractor=pdf_extractor,
         max_workers=max_workers
     )
+    
+    # Get list of PDF files to process
+    pdf_dir = Path(args.pdf_dir)
+    if args.retry_failed:
+        # Only retry specific failed files
+        all_pdf_files = load_failed_files_csv(args.retry_failed)
+        # Filter to only existing files
+        all_pdf_files = [f for f in all_pdf_files if Path(f).exists()]
+        logger.info(f"Retrying {len(all_pdf_files)} failed files from {args.retry_failed}")
+    else:
+        # Recursive search for PDFs
+        all_pdf_files = list(pdf_dir.rglob("*.pdf"))
+        all_pdf_files = [str(p) for p in all_pdf_files]
+    
+    # Apply limit if specified
+    if args.limit:
+        all_pdf_files = all_pdf_files[:args.limit]
+    
+    # Filter out already-processed files
+    pdf_files = tracker.get_unprocessed_files(all_pdf_files)
+    
+    # Start job tracking
+    tracker.start_job(len(all_pdf_files))
+    
+    if not pdf_files:
+        logger.info("All files already processed!")
+        tracker.finish_job()
+        return {'success': 0, 'failed': 0, 'duplicates': 0, 'skipped': len(all_pdf_files)}
+    
+    logger.info(f"Processing {len(pdf_files)} remaining files ({len(all_pdf_files) - len(pdf_files)} already done)")
+    
+    # Load metadata CSV for lookup
+    metadata_map = {}
+    if args.csv:
+        metadata_map = processor.load_metadata_csv(args.csv)
+    
+    # Process cases with progress tracking
     cases = processor.process_batch(
         pdf_dir=args.pdf_dir,
         metadata_csv=args.csv,
-        limit=args.limit,
-        parallel=parallel
+        limit=None,  # We already filtered files
+        parallel=parallel,
+        pdf_files=pdf_files  # Pass specific files to process
     )
     
-    # Insert all successful cases
+    # Track extraction failures
+    for case in cases:
+        if not case.extraction_successful:
+            tracker.mark_failed(
+                file_path=case.source_file_path or case.source_file,
+                error=case.error_message or "Unknown extraction error",
+                stage="extraction",
+                metadata_row=None
+            )
+    
+    # Insert all successful cases with per-case tracking
     db_url = Config.get_database_url()
     inserter = DatabaseInserter.from_url(db_url, enable_rag=args.enable_rag)
     
@@ -132,12 +202,29 @@ def process_batch(args):
         )
     
     successful = [c for c in cases if c.extraction_successful]
-    results = inserter.insert_batch(successful, max_workers=max_workers)
+    
+    # Insert with progress tracking callback
+    def on_insert_result(case, case_id, error, was_duplicate):
+        """Callback for each insert result."""
+        file_path = case.source_file_path or case.source_file
+        if case_id:
+            tracker.mark_success(file_path, case_id, was_duplicate)
+        else:
+            tracker.mark_failed(file_path, error or "Unknown insert error", stage="insert")
+    
+    results = inserter.insert_batch(
+        successful, 
+        max_workers=max_workers,
+        progress_callback=on_insert_result
+    )
+    
+    # Finish job
+    tracker.finish_job()
     
     print(f"\n{'='*50}")
     print(f"Batch Processing Complete")
     print(f"{'='*50}")
-    print(f"  Total PDFs: {len(cases)}")
+    print(f"  Total PDFs: {len(all_pdf_files)}")
     print(f"  Extracted: {len(successful)}")
     print(f"  Inserted: {results['success']}")
     print(f"  Duplicates Updated: {results.get('duplicates', 0)}")
@@ -239,6 +326,15 @@ Examples:
   # Process batch (first 10 cases)
   python -m pipeline.run_pipeline --batch --pdf-dir downloads/Supreme_Court_Opinions --limit 10
 
+  # Production batch with job name (for overnight runs)
+  python -m pipeline.run_pipeline --batch --pdf-dir downloads/Supreme_Court_Opinions --job-name overnight_run
+
+  # Resume interrupted job
+  python -m pipeline.run_pipeline --batch --pdf-dir downloads/Supreme_Court_Opinions --resume logs/checkpoint_overnight_run.json
+
+  # Retry failed files
+  python -m pipeline.run_pipeline --batch --pdf-dir downloads/Supreme_Court_Opinions --retry-failed logs/failed_overnight_run.csv
+
   # Process with custom RAG settings
   python -m pipeline.run_pipeline --pdf case.pdf --chunk-embeddings important --phrase-filter relaxed
 
@@ -259,6 +355,25 @@ Examples:
     parser.add_argument('--row', type=int, help='Row number in CSV (1-indexed)')
     parser.add_argument('--limit', type=int, help='Limit number of files in batch')
     parser.add_argument('--case-id', type=int, help='Case ID for verification')
+    
+    # Progress tracking arguments (for production batch runs)
+    parser.add_argument(
+        '--job-name',
+        type=str,
+        help='Job name for checkpoint/log files (default: auto-generated timestamp)'
+    )
+    parser.add_argument(
+        '--resume',
+        type=str,
+        metavar='CHECKPOINT',
+        help='Resume from checkpoint file (e.g., logs/checkpoint_my_job.json)'
+    )
+    parser.add_argument(
+        '--retry-failed',
+        type=str,
+        metavar='CSV',
+        help='Retry failed files from CSV (e.g., logs/failed_my_job.csv)'
+    )
     
     # Processing options
     parser.add_argument(

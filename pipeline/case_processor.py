@@ -271,7 +271,8 @@ class CaseProcessor:
         pdf_dir: str,
         metadata_csv: Optional[str] = None,
         limit: Optional[int] = None,
-        parallel: bool = True
+        parallel: bool = True,
+        pdf_files: Optional[List[str]] = None
     ) -> List[ExtractedCase]:
         """
         Process a batch of PDF files (with optional parallel processing).
@@ -281,6 +282,7 @@ class CaseProcessor:
             metadata_csv: Path to metadata CSV (optional)
             limit: Maximum number of files to process
             parallel: Use parallel processing (default True)
+            pdf_files: Specific list of PDF file paths to process (overrides pdf_dir scan)
             
         Returns:
             List of ExtractedCase objects
@@ -292,17 +294,21 @@ class CaseProcessor:
         if metadata_csv:
             metadata_map = self.load_metadata_csv(metadata_csv)
         
-        # Find all PDFs (recursively)
-        pdf_files = list(pdf_dir.rglob("*.pdf"))
+        # Use provided pdf_files list or scan directory
+        if pdf_files:
+            pdf_file_paths = [Path(f) for f in pdf_files]
+        else:
+            # Find all PDFs (recursively)
+            pdf_file_paths = list(pdf_dir.rglob("*.pdf"))
         
         if limit:
-            pdf_files = pdf_files[:limit]
+            pdf_file_paths = pdf_file_paths[:limit]
         
-        logger.info(f"Processing {len(pdf_files)} PDF files from {pdf_dir}")
+        logger.info(f"Processing {len(pdf_file_paths)} PDF files from {pdf_dir}")
         
         # Build list of (pdf_path, metadata_row) tuples
         tasks: List[Tuple[Path, Optional[Dict]]] = []
-        for pdf_path in pdf_files:
+        for pdf_path in pdf_file_paths:
             metadata_row = None
             if metadata_map:
                 for case_num, row in metadata_map.items():

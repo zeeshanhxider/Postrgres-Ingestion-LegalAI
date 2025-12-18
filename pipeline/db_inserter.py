@@ -605,21 +605,18 @@ class DatabaseInserter:
         """
         Insert a judge record (uses normalized judges table).
         Creates judge if not exists, then links to case.
+        Uses ON CONFLICT to handle race conditions in parallel processing.
         """
-        # First, get or create the judge in judges table
-        get_judge = text("SELECT judge_id FROM judges WHERE name = :name")
-        result = conn.execute(get_judge, {'name': judge.name})
-        row = result.fetchone()
-        
-        if row:
-            judge_id = row.judge_id
-        else:
-            # Create new judge
-            insert_judge = text("""
-                INSERT INTO judges (name) VALUES (:name) RETURNING judge_id
-            """)
-            result = conn.execute(insert_judge, {'name': judge.name})
-            judge_id = result.fetchone().judge_id
+        # Get-or-create judge using ON CONFLICT to prevent race conditions
+        # This is atomic and safe for parallel execution
+        upsert_judge = text("""
+            INSERT INTO judges (name) 
+            VALUES (:name) 
+            ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+            RETURNING judge_id
+        """)
+        result = conn.execute(upsert_judge, {'name': judge.name})
+        judge_id = result.fetchone().judge_id
         
         # Link judge to case
         link_query = text("""
@@ -1026,13 +1023,20 @@ class DatabaseInserter:
         
         return result.fetchone().argument_id
     
-    def insert_batch(self, cases: List[ExtractedCase], max_workers: int = 4) -> Dict[str, int]:
+    def insert_batch(
+        self, 
+        cases: List[ExtractedCase], 
+        max_workers: int = 4,
+        progress_callback=None
+    ) -> Dict[str, int]:
         """
         Insert a batch of cases in parallel.
         
         Args:
             cases: List of ExtractedCase objects
             max_workers: Number of parallel workers for DB+RAG processing
+            progress_callback: Optional callback(case, case_id, error, was_duplicate)
+                              called after each case insert attempt
             
         Returns:
             Dictionary with success/failure counts
@@ -1057,16 +1061,34 @@ class DatabaseInserter:
                 try:
                     case_id = future.result()
                     if case_id:
-                        if case_id == -1:  # Duplicate marker
+                        was_duplicate = (case_id == -1)
+                        if was_duplicate:  # Duplicate marker
                             results['duplicates'] += 1
                         else:
                             results['success'] += 1
                             results['case_ids'].append(case_id)
+                        
+                        # Call progress callback on success
+                        if progress_callback:
+                            try:
+                                progress_callback(case, case_id if case_id != -1 else 0, None, was_duplicate)
+                            except Exception as cb_err:
+                                logger.warning(f"Progress callback error: {cb_err}")
                     else:
                         results['failed'] += 1
+                        if progress_callback:
+                            try:
+                                progress_callback(case, None, "Insert returned None", False)
+                            except Exception as cb_err:
+                                logger.warning(f"Progress callback error: {cb_err}")
                 except Exception as e:
                     logger.error(f"Case processing error for {case.metadata.case_number}: {e}")
                     results['failed'] += 1
+                    if progress_callback:
+                        try:
+                            progress_callback(case, None, str(e), False)
+                        except Exception as cb_err:
+                            logger.warning(f"Progress callback error: {cb_err}")
         
         logger.info(
             f"Batch insert complete: {results['success']} success, "
