@@ -91,7 +91,9 @@ Extract this JSON structure:
                 "winner_personal_role": "Personal/descriptive role of winner: Employee|Employer|Landlord|Tenant|Parent|Child|State|Defendant|Plaintiff|Insurer|Insured|null",
                 "related_rcws": ["Specific RCW statutes that apply to THIS issue (e.g., 'RCW 9.94A.525')"],
                 "keywords": ["2-4 key legal terms for this issue (e.g., 'fourth amendment', 'reasonable expectation', 'consent search')"],
-                "confidence": "0.0-1.0 confidence score for extraction accuracy"
+                "confidence": "0.0-1.0 confidence score for extraction accuracy",
+                "appellant_argument": "Summary of the appellant's main argument on this issue (1-2 sentences). What did the appellant claim or contend?",
+                "respondent_argument": "Summary of the respondent's main argument on this issue (1-2 sentences). What did the respondent argue in response?"
             }}
         ]
     }},
@@ -624,7 +626,10 @@ class LLMExtractor:
                         decision_stage=i.get("decision_stage", "appeal"),
                         decision_summary=i.get("ruling") or i.get("decision_summary"),
                         winner_personal_role=i.get("winner_personal_role"),
-                        confidence_score=confidence
+                        confidence_score=confidence,
+                        # Arguments from each side
+                        appellant_argument=i.get("appellant_argument"),
+                        respondent_argument=i.get("respondent_argument")
                     ))
         
         case.extraction_timestamp = datetime.now()

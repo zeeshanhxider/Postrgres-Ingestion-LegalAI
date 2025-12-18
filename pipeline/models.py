@@ -89,6 +89,9 @@ class Issue:
     decision_summary: Optional[str] = None      # How the court ruled (the ruling/answer)
     winner_personal_role: Optional[str] = None  # "Employee", "Landlord", "State", etc.
     confidence_score: Optional[float] = None    # LLM confidence (0.0-1.0)
+    # Arguments made by each side
+    appellant_argument: Optional[str] = None    # What the appellant argued
+    respondent_argument: Optional[str] = None   # What the respondent argued
 
 
 @dataclass

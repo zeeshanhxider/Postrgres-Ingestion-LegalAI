@@ -176,10 +176,15 @@ class DatabaseInserter:
                         self._insert_statute(conn, case_id, statute)
                     logger.info(f"Inserted {len(case.statutes)} statutes")
                     
-                    # 8. Insert issues
+                    # 8. Insert issues and their arguments
                     for issue in case.issues:
-                        self._insert_issue(conn, case_id, issue)
-                    logger.info(f"Inserted {len(case.issues)} issues")
+                        issue_id = self._insert_issue(conn, case_id, issue)
+                        # Insert arguments for this issue
+                        if issue.appellant_argument:
+                            self._insert_argument(conn, case_id, issue_id, 'appellant', issue.appellant_argument)
+                        if issue.respondent_argument:
+                            self._insert_argument(conn, case_id, issue_id, 'respondent', issue.respondent_argument)
+                    logger.info(f"Inserted {len(case.issues)} issues with arguments")
                     
                     trans.commit()
                     logger.info(f"Successfully committed case {case_id}")
@@ -987,6 +992,39 @@ class DatabaseInserter:
         })
         
         return result.fetchone().issue_id
+    
+    def _insert_argument(self, conn, case_id: int, issue_id: int, side: str, argument_text: str) -> int:
+        """
+        Insert a legal argument record for an issue.
+        
+        Args:
+            conn: Database connection
+            case_id: The case ID
+            issue_id: The issue ID this argument relates to
+            side: 'appellant' or 'respondent'
+            argument_text: The text of the argument
+            
+        Returns:
+            The argument_id of the inserted row
+        """
+        query = text("""
+            INSERT INTO arguments (case_id, issue_id, side, argument_text, created_at, updated_at)
+            VALUES (:case_id, :issue_id, :side, :argument_text, :created_at, :updated_at)
+            RETURNING argument_id
+        """)
+        
+        now = datetime.now()
+        
+        result = conn.execute(query, {
+            'case_id': case_id,
+            'issue_id': issue_id,
+            'side': side,
+            'argument_text': argument_text,
+            'created_at': now,
+            'updated_at': now,
+        })
+        
+        return result.fetchone().argument_id
     
     def insert_batch(self, cases: List[ExtractedCase], max_workers: int = 4) -> Dict[str, int]:
         """
