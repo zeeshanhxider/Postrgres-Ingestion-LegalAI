@@ -221,16 +221,25 @@ def process_batch(args):
     # Finish job
     tracker.finish_job()
     
-    print(f"\n{'='*50}")
-    print(f"Batch Processing Complete")
-    print(f"{'='*50}")
-    print(f"  Total PDFs: {len(all_pdf_files)}")
-    print(f"  Extracted: {len(successful)}")
-    print(f"  Inserted: {results['success']}")
-    print(f"  Duplicates Updated: {results.get('duplicates', 0)}")
-    print(f"  Failed: {results['failed']}")
+    # Force flush to ensure output is visible
+    import sys
+    sys.stdout.flush()
+    sys.stderr.flush()
+    
+    print(f"\n{'='*50}", flush=True)
+    print(f"Batch Processing Complete", flush=True)
+    print(f"{'='*50}", flush=True)
+    print(f"  Total PDFs: {len(all_pdf_files)}", flush=True)
+    print(f"  Extracted: {len(successful)}", flush=True)
+    print(f"  Inserted: {results['success']}", flush=True)
+    print(f"  Duplicates Updated: {results.get('duplicates', 0)}", flush=True)
+    print(f"  Failed: {results['failed']}", flush=True)
     if args.enable_rag:
-        print(f"  RAG mode: chunks={args.chunk_embeddings}, phrases={args.phrase_filter}")
+        print(f"  RAG mode: chunks={args.chunk_embeddings}, phrases={args.phrase_filter}", flush=True)
+    
+    # Final flush before returning
+    sys.stdout.flush()
+    sys.stderr.flush()
     
     return results
 

@@ -5,6 +5,7 @@ Coordinates chunking, sentence processing, word indexing, phrase extraction,
 and embedding generation with configurable options.
 """
 import logging
+import threading
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
 from enum import Enum
@@ -21,6 +22,9 @@ from .phrase_extractor import PhraseExtractor
 from .dimension_service import DimensionService
 
 logger = logging.getLogger(__name__)
+
+# Global lock for Ollama API calls to prevent overload
+_ollama_lock = threading.Lock()
 
 
 class ChunkEmbeddingMode(Enum):
@@ -285,22 +289,31 @@ class RAGProcessor:
         return embeddings_generated
     
     def _generate_embedding_sync(self, text_content: str) -> Optional[List[float]]:
-        """Generate embedding for text using Ollama (synchronous)."""
-        try:
-            response = requests.post(
-                f"{Config.OLLAMA_BASE_URL}/api/embeddings",
-                json={
-                    "model": Config.OLLAMA_EMBEDDING_MODEL,
-                    "prompt": text_content[:4000]  # Truncate to 4k chars for faster embedding
-                },
-                timeout=30  # Reduced timeout for faster failure detection
-            )
-            response.raise_for_status()
-            result = response.json()
-            return result.get("embedding")
-        except Exception as e:
-            logger.error(f"Embedding generation failed: {e}")
-            return None
+        """Generate embedding for text using Ollama (synchronous, thread-safe)."""
+        # Use lock to prevent overwhelming Ollama with concurrent requests
+        with _ollama_lock:
+            try:
+                response = requests.post(
+                    f"{Config.OLLAMA_BASE_URL}/api/embed",
+                    json={
+                        "model": Config.OLLAMA_EMBEDDING_MODEL,
+                        "input": text_content[:4000]  # Truncate to 4k chars for faster embedding
+                    },
+                    timeout=60  # Increased timeout for embedding generation
+                )
+                response.raise_for_status()
+                result = response.json()
+                # New API returns "embeddings" array, old API returns "embedding"
+                embeddings = result.get("embeddings")
+                if embeddings and len(embeddings) > 0:
+                    return embeddings[0]
+                return result.get("embedding")
+            except requests.exceptions.Timeout:
+                logger.warning(f"Embedding generation timed out")
+                return None
+            except Exception as e:
+                logger.error(f"Embedding generation failed: {e}")
+                return None
     
     # Alias for backward compatibility
     def process_case_sync(

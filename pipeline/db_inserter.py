@@ -8,6 +8,7 @@ Integrates with RAG processor for full indexing pipeline.
 import os
 import re
 import logging
+import threading
 from datetime import datetime
 from typing import Optional, Dict, Any, List, Tuple
 from sqlalchemy import create_engine, text
@@ -19,25 +20,29 @@ from .dimension_service import DimensionService
 
 logger = logging.getLogger(__name__)
 
+# Global lock for Ollama API calls to prevent overload
+_ollama_embedding_lock = threading.Lock()
+
 
 def generate_embedding(text: str, model: str = None) -> Optional[List[float]]:
     """
-    Generate embedding using Ollama.
+    Generate embedding using Ollama (thread-safe).
     Returns 1024-dim vector for mxbai-embed-large.
     """
-    try:
+    with _ollama_embedding_lock:
         try:
-            from langchain_ollama import OllamaEmbeddings
-        except ImportError:
-            from langchain_community.embeddings import OllamaEmbeddings
-        
-        ollama_model = model or os.getenv("OLLAMA_EMBED_MODEL", "mxbai-embed-large")
-        ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-        embeddings = OllamaEmbeddings(model=ollama_model, base_url=ollama_base_url)
-        return embeddings.embed_query(text)
-    except Exception as e:
-        logger.error(f"Embedding generation failed: {e}")
-        return None
+            try:
+                from langchain_ollama import OllamaEmbeddings
+            except ImportError:
+                from langchain_community.embeddings import OllamaEmbeddings
+            
+            ollama_model = model or os.getenv("OLLAMA_EMBED_MODEL", "mxbai-embed-large")
+            ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+            embeddings = OllamaEmbeddings(model=ollama_model, base_url=ollama_base_url)
+            return embeddings.embed_query(text)
+        except Exception as e:
+            logger.error(f"Embedding generation failed: {e}")
+            return None
 
 
 class DatabaseInserter:
@@ -1041,7 +1046,7 @@ class DatabaseInserter:
         Returns:
             Dictionary with success/failure counts
         """
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
         
         results = {'success': 0, 'failed': 0, 'case_ids': [], 'duplicates': 0}
         
@@ -1050,50 +1055,88 @@ class DatabaseInserter:
         
         def process_single_case(case: ExtractedCase) -> Optional[int]:
             """Process a single case (insert + RAG)."""
-            return self.insert_case(case)
+            try:
+                result = self.insert_case(case)
+                logger.debug(f"insert_case returned {result} for {case.metadata.case_number}")
+                return result
+            except Exception as e:
+                logger.error(f"insert_case exception for {case.metadata.case_number}: {e}")
+                raise
         
         # Process cases in parallel
+        logger.info(f"Processing {len(cases)} cases with {max_workers} workers")
+        
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_case = {executor.submit(process_single_case, case): case for case in cases}
             
-            for future in as_completed(future_to_case):
-                case = future_to_case[future]
-                try:
-                    case_id = future.result()
-                    if case_id:
-                        was_duplicate = (case_id == -1)
-                        if was_duplicate:  # Duplicate marker
-                            results['duplicates'] += 1
+            try:
+                for future in as_completed(future_to_case, timeout=900):  # 15 minute timeout for batch
+                    case = future_to_case[future]
+                    try:
+                        case_id = future.result(timeout=300)  # 5 minute timeout per case
+                        if case_id:
+                            was_duplicate = (case_id == -1)
+                            if was_duplicate:  # Duplicate marker
+                                results['duplicates'] += 1
+                            else:
+                                results['success'] += 1
+                                results['case_ids'].append(case_id)
+                            
+                            # Call progress callback on success
+                            if progress_callback:
+                                try:
+                                    progress_callback(case, case_id if case_id != -1 else 0, None, was_duplicate)
+                                except Exception as cb_err:
+                                    logger.warning(f"Progress callback error: {cb_err}")
                         else:
-                            results['success'] += 1
-                            results['case_ids'].append(case_id)
-                        
-                        # Call progress callback on success
-                        if progress_callback:
-                            try:
-                                progress_callback(case, case_id if case_id != -1 else 0, None, was_duplicate)
-                            except Exception as cb_err:
-                                logger.warning(f"Progress callback error: {cb_err}")
-                    else:
+                            results['failed'] += 1
+                            if progress_callback:
+                                try:
+                                    progress_callback(case, None, "Insert returned None", False)
+                                except Exception as cb_err:
+                                    logger.warning(f"Progress callback error: {cb_err}")
+                    except (TimeoutError, FuturesTimeoutError) as te:
+                        logger.error(f"Case processing timed out for {case.metadata.case_number}: {te}")
                         results['failed'] += 1
                         if progress_callback:
                             try:
-                                progress_callback(case, None, "Insert returned None", False)
+                                progress_callback(case, None, "Timeout", False)
                             except Exception as cb_err:
                                 logger.warning(f"Progress callback error: {cb_err}")
-                except Exception as e:
-                    logger.error(f"Case processing error for {case.metadata.case_number}: {e}")
-                    results['failed'] += 1
-                    if progress_callback:
-                        try:
-                            progress_callback(case, None, str(e), False)
-                        except Exception as cb_err:
-                            logger.warning(f"Progress callback error: {cb_err}")
+                    except Exception as e:
+                        logger.error(f"Case processing error for {case.metadata.case_number}: {e}")
+                        results['failed'] += 1
+                        if progress_callback:
+                            try:
+                                progress_callback(case, None, str(e), False)
+                            except Exception as cb_err:
+                                logger.warning(f"Progress callback error: {cb_err}")
+            except (TimeoutError, FuturesTimeoutError) as te:
+                logger.error(f"Batch processing timed out: {te}")
+                # Mark remaining cases as failed
+                for f, c in future_to_case.items():
+                    if not f.done():
+                        results['failed'] += 1
+                        if progress_callback:
+                            try:
+                                progress_callback(c, None, "Batch timeout", False)
+                            except:
+                                pass
+        
+        # Ensure all threads are done before returning
+        logger.debug("Waiting for executor shutdown...")
+        # ThreadPoolExecutor's context manager already waits for all futures, but log it
         
         logger.info(
             f"Batch insert complete: {results['success']} success, "
             f"{results['duplicates']} duplicates updated, {results['failed']} failed"
         )
+        
+        # Force flush logs
+        import sys
+        sys.stdout.flush()
+        sys.stderr.flush()
+        
         return results
     
     def get_case_count(self) -> int:

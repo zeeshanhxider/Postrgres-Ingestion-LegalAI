@@ -22,7 +22,7 @@ class PipelineConfig:
     llama_cloud_api_key: Optional[str] = None
     
     # Ollama (LLM extraction)
-    ollama_base_url: str = "https://ollama.legaldb.ai"
+    ollama_base_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "qwen:32b"
     ollama_embedding_model: str = "mxbai-embed-large"
     
@@ -39,7 +39,7 @@ class PipelineConfig:
                 "postgresql://postgres:postgres@localhost:5435/cases_llama3_3"
             ),
             llama_cloud_api_key=os.getenv("LLAMA_CLOUD_API_KEY"),
-            ollama_base_url=os.getenv("OLLAMA_BASE_URL", "https://ollama.legaldb.ai"),
+            ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
             ollama_model=os.getenv("OLLAMA_MODEL", "qwen:32b"),
             ollama_embedding_model=os.getenv("OLLAMA_EMBEDDING_MODEL", "mxbai-embed-large"),
             max_text_chars=int(os.getenv("MAX_TEXT_CHARS", "30000")),
@@ -66,7 +66,7 @@ class Config:
     )
     
     # Ollama
-    OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "https://ollama.legaldb.ai")
+    OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
     OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen:32b")
     OLLAMA_EMBEDDING_MODEL = os.getenv("OLLAMA_EMBEDDING_MODEL", "mxbai-embed-large")
     
@@ -86,7 +86,7 @@ class Config:
             "DATABASE_URL", 
             "postgresql://postgres:postgres@localhost:5435/cases_llama3_3"
         )
-        cls.OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "https://ollama.legaldb.ai")
+        cls.OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
         cls.OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen:32b")
         cls.OLLAMA_EMBEDDING_MODEL = os.getenv("OLLAMA_EMBEDDING_MODEL", "mxbai-embed-large")
         cls.LLAMA_CLOUD_API_KEY = os.getenv("LLAMA_CLOUD_API_KEY")
