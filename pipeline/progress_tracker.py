@@ -387,6 +387,7 @@ class ProgressTracker:
         self.save_checkpoint()
         
         duration = ""
+        avg_time_str = ""
         if self.start_time:
             elapsed = (datetime.now() - self.start_time).total_seconds()
             if elapsed < 60:
@@ -397,6 +398,15 @@ class ProgressTracker:
                 hours = int(elapsed // 3600)
                 mins = int((elapsed % 3600) // 60)
                 duration = f"{hours}h {mins}m"
+            
+            # Calculate average time per case
+            processed_count = len(self.processed_files)
+            if processed_count > 0:
+                avg_time = elapsed / processed_count
+                if avg_time < 60:
+                    avg_time_str = f"{avg_time:.1f}s"
+                else:
+                    avg_time_str = f"{int(avg_time // 60)}m {int(avg_time % 60)}s"
         
         total_failed = self.stats['failed_extraction'] + self.stats['failed_insert']
         
@@ -410,6 +420,8 @@ class ProgressTracker:
         logger.info(f"Failed extraction: {self.stats['failed_extraction']}")
         logger.info(f"Failed insert: {self.stats['failed_insert']}")
         logger.info(f"Duration: {duration}")
+        if avg_time_str:
+            logger.info(f"Avg time per case: {avg_time_str}")
         
         if total_failed > 0:
             logger.info(f"\n[!] {total_failed} failures logged to: {self.failed_file}")

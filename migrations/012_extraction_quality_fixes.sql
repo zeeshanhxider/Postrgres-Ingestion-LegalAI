@@ -142,10 +142,9 @@ SELECT
         'summary', LEFT(id.issue_summary, 200),
         'outcome', id.issue_outcome,
         'winner', id.winner_legal_role,
-        'taxonomy', lt.category || ' > ' || lt.subcategory
+        'taxonomy_id', id.taxonomy_id
     ))
     FROM issues_decisions id
-    JOIN legal_taxonomy lt ON id.taxonomy_id = lt.taxonomy_id
     WHERE id.case_id = c.case_id) AS issues,
     -- Party count
     (SELECT COUNT(*) FROM parties p WHERE p.case_id = c.case_id) AS party_count,
