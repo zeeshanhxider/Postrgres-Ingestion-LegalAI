@@ -180,15 +180,24 @@ def process_batch(args):
         pdf_files=pdf_files  # Pass specific files to process
     )
     
-    # Track extraction failures
+    # Track extraction results - mark successes AND failures
+    successful = []
     for case in cases:
-        if not case.extraction_successful:
+        if case.extraction_successful:
+            # Mark extraction success immediately (separate from insert)
+            # This allows recovery if insert fails later
+            tracker.mark_extraction_success(case.source_file_path or "")
+            successful.append(case)
+        else:
             tracker.mark_failed(
-                file_path=case.source_file_path or case.source_file,
+                file_path=case.source_file_path or "",
                 error=case.error_message or "Unknown extraction error",
                 stage="extraction",
                 metadata_row=None
             )
+    
+    logger.info(f"[EXTRACTION COMPLETE] {len(successful)} extracted, {len(cases) - len(successful)} failed")
+    print(f"\n>>> Starting INSERT phase for {len(successful)} cases with {max_workers} workers...", flush=True)
     
     # Insert all successful cases with per-case tracking
     db_url = Config.get_database_url()
@@ -201,12 +210,10 @@ def process_batch(args):
             phrase_filter_mode=args.phrase_filter
         )
     
-    successful = [c for c in cases if c.extraction_successful]
-    
     # Insert with progress tracking callback
     def on_insert_result(case, case_id, error, was_duplicate):
         """Callback for each insert result."""
-        file_path = case.source_file_path or case.source_file
+        file_path = case.source_file_path or ""
         if case_id:
             tracker.mark_success(file_path, case_id, was_duplicate)
         else:

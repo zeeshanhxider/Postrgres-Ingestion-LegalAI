@@ -34,7 +34,8 @@ class ProgressTracker:
         self,
         output_dir: str = "logs",
         job_name: Optional[str] = None,
-        auto_save_interval: int = 5
+        auto_save_interval: int = 1,  # Save after every file by default
+        backup_interval: int = 50     # Backup checkpoint every N files
     ):
         """
         Initialize progress tracker.
@@ -42,7 +43,8 @@ class ProgressTracker:
         Args:
             output_dir: Directory for checkpoint and failed files
             job_name: Unique name for this job (default: timestamp)
-            auto_save_interval: Save checkpoint every N files
+            auto_save_interval: Save checkpoint every N files (default: 1 = every file)
+            backup_interval: Create backup checkpoint every N files
         """
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -54,12 +56,18 @@ class ProgressTracker:
             self.job_name = f"batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         
         self.checkpoint_file = self.output_dir / f"checkpoint_{self.job_name}.json"
+        self.checkpoint_backup = self.output_dir / f"checkpoint_{self.job_name}.backup.json"
+        self.checkpoint_temp = self.output_dir / f"checkpoint_{self.job_name}.tmp"
         self.failed_file = self.output_dir / f"failed_{self.job_name}.csv"
         
         self.auto_save_interval = auto_save_interval
+        self.backup_interval = backup_interval
+        self.files_since_backup = 0
         
         # State
         self.processed_files: Set[str] = set()
+        self.extracted_files: Set[str] = set()  # Track extraction separate from insert
+        self.pending_inserts: Set[str] = set()  # Files extracted but not yet inserted
         self.failed_files: List[Dict] = []
         self.stats = {
             'extracted': 0,
@@ -76,7 +84,7 @@ class ProgressTracker:
         
         # Shutdown handling
         self._shutdown_requested = False
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()  # RLock allows same thread to acquire multiple times
         
         # Setup signal handlers
         self._setup_signal_handlers()
@@ -122,9 +130,13 @@ class ProgressTracker:
             
             self.job_name = data.get('job_name', self.job_name)
             self.processed_files = set(data.get('processed_files', []))
+            self.extracted_files = set(data.get('extracted_files', []))
+            self.pending_inserts = set(data.get('pending_inserts', []))
             self.stats = data.get('stats', self.stats)
             
-            logger.info(f"[OK] Loaded checkpoint: {len(self.processed_files)} files already processed")
+            logger.info(f"[OK] Loaded checkpoint: {len(self.processed_files)} files fully processed")
+            if self.pending_inserts:
+                logger.info(f"  [!] {len(self.pending_inserts)} files extracted but pending insert")
             logger.info(f"  Stats: extracted={self.stats['extracted']}, inserted={self.stats['inserted']}, failed={self.stats['failed_extraction'] + self.stats['failed_insert']}")
             
             return True
@@ -133,23 +145,53 @@ class ProgressTracker:
             logger.error(f"Failed to load checkpoint: {e}")
             return False
     
-    def save_checkpoint(self):
-        """Save current progress to checkpoint file."""
+    def save_checkpoint(self, force_backup: bool = False):
+        """Save current progress to checkpoint file using atomic write."""
         with self._lock:
             data = {
                 'job_name': self.job_name,
                 'processed_files': list(self.processed_files),
+                'extracted_files': list(self.extracted_files),
+                'pending_inserts': list(self.pending_inserts),
                 'stats': self.stats,
                 'last_updated': datetime.now().isoformat(),
                 'total_files': self.total_files,
+                'processed_count': len(self.processed_files),
             }
             
             try:
-                with open(self.checkpoint_file, 'w') as f:
+                # Atomic write: write to temp file, then rename
+                with open(self.checkpoint_temp, 'w') as f:
                     json.dump(data, f, indent=2)
+                    f.flush()
+                    import os
+                    os.fsync(f.fileno())  # Force write to disk
+                
+                # Rename temp to actual (atomic on most systems)
+                import shutil
+                shutil.move(str(self.checkpoint_temp), str(self.checkpoint_file))
+                
                 self.files_since_save = 0
+                self.files_since_backup += 1
+                
+                # Create backup periodically
+                if force_backup or self.files_since_backup >= self.backup_interval:
+                    try:
+                        shutil.copy2(str(self.checkpoint_file), str(self.checkpoint_backup))
+                        self.files_since_backup = 0
+                        logger.debug(f"Backup checkpoint saved: {self.checkpoint_backup}")
+                    except Exception as be:
+                        logger.warning(f"Failed to create backup checkpoint: {be}")
+                        
             except Exception as e:
                 logger.error(f"Failed to save checkpoint: {e}")
+                # Try direct write as fallback
+                try:
+                    with open(self.checkpoint_file, 'w') as f:
+                        json.dump(data, f, indent=2)
+                    logger.info("Checkpoint saved via fallback method")
+                except Exception as e2:
+                    logger.error(f"Fallback checkpoint save also failed: {e2}")
     
     def start_job(self, total_files: int):
         """
@@ -194,6 +236,21 @@ class ProgressTracker:
         
         return unprocessed
     
+    def mark_extraction_success(self, file_path: str):
+        """
+        Mark a file as successfully extracted (pending insert).
+        This allows recovery if insert fails later.
+        
+        Args:
+            file_path: Path to the extracted file
+        """
+        with self._lock:
+            path_str = str(file_path)
+            self.extracted_files.add(path_str)
+            self.pending_inserts.add(path_str)
+            # Save immediately to ensure extraction progress is recorded
+            self.save_checkpoint()
+    
     def mark_success(
         self,
         file_path: str,
@@ -201,7 +258,7 @@ class ProgressTracker:
         was_duplicate: bool = False
     ):
         """
-        Mark a file as successfully processed.
+        Mark a file as successfully processed (extracted + inserted).
         
         Args:
             file_path: Path to the processed file
@@ -209,7 +266,10 @@ class ProgressTracker:
             was_duplicate: True if case was updated (not new insert)
         """
         with self._lock:
-            self.processed_files.add(str(file_path))
+            path_str = str(file_path)
+            self.processed_files.add(path_str)
+            # Remove from pending since insert succeeded
+            self.pending_inserts.discard(path_str)
             self.stats['extracted'] += 1
             
             if was_duplicate:
@@ -219,9 +279,13 @@ class ProgressTracker:
             
             self.files_since_save += 1
             
-            # Auto-save checkpoint
+            # Auto-save checkpoint (default: every file)
             if self.files_since_save >= self.auto_save_interval:
                 self.save_checkpoint()
+                
+            # Log checkpoint save for visibility every 100 files
+            if len(self.processed_files) % 100 == 0:
+                logger.info(f"[CHECKPOINT] {len(self.processed_files)} files saved to {self.checkpoint_file}")
         
         # Log progress
         self._log_progress(file_path, case_id, was_duplicate)
@@ -268,11 +332,12 @@ class ProgressTracker:
             self.files_since_save += 1
             if self.files_since_save >= self.auto_save_interval:
                 self.save_checkpoint()
-        
+                
         # Log
         filename = Path(file_path).name
         done = len(self.processed_files)
         logger.warning(f"[{done}/{self.total_files}] [FAIL] {stage}: {filename} - {str(error)[:100]}")
+        logger.info(f"[CHECKPOINT] Failure recorded, checkpoint saved ({len(self.processed_files)} total)")
     
     def _write_failed_csv(self, failure: Dict):
         """Append a failure to the CSV file."""
