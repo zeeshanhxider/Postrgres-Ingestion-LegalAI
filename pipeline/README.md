@@ -200,6 +200,71 @@ python -m pipeline.run_pipeline --batch --pdf-dir downloads/Court_of_Appeals_Pub
 | `--verify`           | flag   | False      | Verify case data in database               |
 | `--case-id`          | int    | None       | Case ID for verification                   |
 
+## Quality Assurance & Data Verification
+
+### QA Export Tool
+
+Export case data for quality assurance and comparison against manual standards:
+
+```bash
+# Generate QA summary report with metrics
+python -m pipeline.qa_export --report --output logs/qa_report.json
+
+# Export cases to CSV for manual review
+python -m pipeline.qa_export --output logs/qa_review.csv --limit 100
+
+# Export to Excel with formatting
+python -m pipeline.qa_export --output logs/qa_review.xlsx --format excel --limit 50
+
+# Export specific cases
+python -m pipeline.qa_export --case-ids 1,2,3,4,5 --output logs/specific_cases.csv
+```
+
+**QA Report Includes:**
+
+- Total cases and issue counts
+- Issue count distribution (identifies single-issue cases)
+- Outcome distribution (Affirmed, Reversed, Remanded, Dismissed, Mixed)
+- Winner role distribution
+- Data quality flags (% single-issue cases, % cases without issues)
+
+**CSV Export Format:**
+
+- Flattened structure for easy comparison with Excel standards
+- Up to 5 issues per case with separate columns
+- Party and judge lists
+- RCW count, citation count, statute count
+- Extraction timestamp for traceability
+
+### Data Quality Checks
+
+The pipeline enforces:
+
+1. **Issue Outcome Standardization**: Only 5 valid values (Affirmed, Dismissed, Reversed, Remanded, Mixed)
+2. **Winner Role Validation**: Prevents outcome values (e.g., "Affirmed") in winner_legal_role field
+3. **RCW Dimension**: Normalized RCW citations in `rcw_dim` table for rollup queries
+4. **Multi-Issue Extraction**: LLM prompt explicitly instructs extraction of 2-5 distinct issues per case
+
+### QA View
+
+Query the `v_qa_extraction` view for quick data quality checks:
+
+```sql
+-- Check cases with potential quality issues
+SELECT case_id, title, issue_count, overall_outcome
+FROM v_qa_extraction
+WHERE issue_count <= 1
+ORDER BY case_id DESC
+LIMIT 20;
+
+-- RCW rollup by title
+SELECT r.title, r.chapter, COUNT(*) as usage_count
+FROM rcw_dim r
+JOIN issue_rcw ir ON r.rcw_id = ir.rcw_id
+GROUP BY r.title, r.chapter
+ORDER BY usage_count DESC;
+```
+
 ## Environment Variables
 
 ```env
@@ -226,6 +291,8 @@ LLAMA_CLOUD_API_KEY=llx-...
 - `citation_edges` - Case citations
 - `statute_citations` - Statutory references
 - `issues_decisions` - Legal issues and outcomes
+- `rcw_dim` - Normalized RCW statutes (NEW)
+- `issue_rcw` - Junction table linking issues to RCWs (NEW)
 
 **RAG Tables:**
 
