@@ -953,22 +953,29 @@ class DatabaseInserter:
         Insert an issue/decision record with full field population.
         Links RCW references from the issue to statutes_dim.
         Links to legal_taxonomy via taxonomy_id.
+        Links RCWs to rcw_dim and issue_rcw junction table.
         """
-        # Resolve RCW reference (use first one as primary)
+        # Resolve RCW reference (use first one as primary for backward compat)
         rcw_reference = self._resolve_rcw_reference(conn, issue.rcw_references)
         
         # Resolve taxonomy_id from category/subcategory
         taxonomy_id = self._resolve_taxonomy_id(conn, issue.category, issue.subcategory)
         
+        # Normalize issue_outcome to 5 valid values
+        normalized_outcome = self._normalize_issue_outcome(issue.outcome)
+        
+        # Validate and normalize winner_legal_role (prevent outcome values)
+        validated_winner = self._validate_winner_legal_role(issue.winner)
+        
         query = text("""
             INSERT INTO issues_decisions (
                 case_id, issue_summary, rcw_reference, keywords, 
-                decision_stage, decision_summary, appeal_outcome, 
+                decision_stage, decision_summary, issue_outcome, 
                 winner_legal_role, winner_personal_role,
                 confidence_score, taxonomy_id, created_at, updated_at
             ) VALUES (
                 :case_id, :issue_summary, :rcw_reference, :keywords,
-                :decision_stage, :decision_summary, :appeal_outcome,
+                :decision_stage, :decision_summary, :issue_outcome,
                 :winner_legal_role, :winner_personal_role,
                 :confidence_score, :taxonomy_id, :created_at, :updated_at
             )
@@ -984,8 +991,8 @@ class DatabaseInserter:
             'keywords': issue.keywords,  # PostgreSQL array
             'decision_stage': issue.decision_stage or 'appeal',
             'decision_summary': issue.decision_summary,
-            'issue_outcome': issue.outcome,
-            'winner_legal_role': issue.winner,
+            'issue_outcome': normalized_outcome,
+            'winner_legal_role': validated_winner,
             'winner_personal_role': issue.winner_personal_role,
             'confidence_score': issue.confidence_score,
             'taxonomy_id': taxonomy_id,
@@ -993,7 +1000,163 @@ class DatabaseInserter:
             'updated_at': now,
         })
         
-        return result.fetchone().issue_id
+        issue_id = result.fetchone().issue_id
+        
+        # Link all RCWs to the rcw_dim and issue_rcw junction table
+        if issue.rcw_references:
+            self._link_issue_rcws(conn, issue_id, issue.rcw_references)
+        
+        return issue_id
+    
+    def _normalize_issue_outcome(self, outcome: Optional[str]) -> Optional[str]:
+        """
+        Normalize issue_outcome to exactly 5 valid values.
+        Valid: Affirmed, Dismissed, Reversed, Remanded, Mixed
+        """
+        if not outcome:
+            return None
+        
+        outcome_lower = outcome.lower().strip()
+        
+        # Check for mixed/partial outcomes first
+        if any(x in outcome_lower for x in ['in part', 'partial', 'split']):
+            return 'Mixed'
+        if 'affirm' in outcome_lower and 'revers' in outcome_lower:
+            return 'Mixed'
+        if 'affirm' in outcome_lower and 'remand' in outcome_lower:
+            return 'Mixed'
+        if 'revers' in outcome_lower and 'remand' in outcome_lower:
+            return 'Mixed'
+        
+        # Single outcomes
+        if 'affirm' in outcome_lower:
+            return 'Affirmed'
+        if 'dismiss' in outcome_lower:
+            return 'Dismissed'
+        if 'revers' in outcome_lower:
+            return 'Reversed'
+        if 'remand' in outcome_lower:
+            return 'Remanded'
+        if 'mixed' in outcome_lower:
+            return 'Mixed'
+        
+        # If doesn't match any pattern, log and return as-is (will fail constraint)
+        logger.warning(f"Unknown issue_outcome value: {outcome}")
+        return outcome
+    
+    def _validate_winner_legal_role(self, winner: Optional[str]) -> Optional[str]:
+        """
+        Validate winner_legal_role is a party role, not an outcome.
+        Prevents "Affirmed", "Reversed", etc. from being stored.
+        """
+        if not winner:
+            return None
+        
+        winner_clean = winner.strip()
+        
+        # Invalid values (outcomes, not parties)
+        invalid_values = {'affirmed', 'reversed', 'remanded', 'dismissed', 'mixed',
+                          'affirmed in part', 'reversed in part', 'partial'}
+        
+        if winner_clean.lower() in invalid_values:
+            logger.warning(f"Invalid winner_legal_role (outcome instead of party): {winner}")
+            return None
+        
+        # Valid party roles
+        valid_roles = {'Appellant', 'Respondent', 'Petitioner', 'State', 
+                       'Plaintiff', 'Defendant', 'Neither'}
+        
+        # Try to match to valid role (case-insensitive)
+        for valid in valid_roles:
+            if winner_clean.lower() == valid.lower():
+                return valid
+        
+        # If not a recognized role, return as-is but log warning
+        logger.warning(f"Unrecognized winner_legal_role: {winner}")
+        return winner_clean
+    
+    def _link_issue_rcws(self, conn, issue_id: int, rcw_references: List[str]):
+        """
+        Link RCWs to the rcw_dim dimension table and issue_rcw junction.
+        Creates RCW entries if they don't exist.
+        """
+        for rcw in rcw_references:
+            if not rcw or not rcw.strip():
+                continue
+            
+            rcw_clean = rcw.strip()
+            
+            # Get or create RCW in dimension table
+            rcw_id = self._get_or_create_rcw(conn, rcw_clean)
+            
+            if rcw_id:
+                # Link to issue via junction table
+                try:
+                    conn.execute(text("""
+                        INSERT INTO issue_rcw (issue_id, rcw_id)
+                        VALUES (:issue_id, :rcw_id)
+                        ON CONFLICT (issue_id, rcw_id) DO NOTHING
+                    """), {'issue_id': issue_id, 'rcw_id': rcw_id})
+                except Exception as e:
+                    logger.warning(f"Failed to link RCW {rcw_clean} to issue {issue_id}: {e}")
+    
+    def _get_or_create_rcw(self, conn, rcw_citation: str) -> Optional[int]:
+        """
+        Get or create an RCW entry in rcw_dim.
+        Parses RCW citation into title, chapter, section, subsection.
+        """
+        import re
+        
+        # Parse RCW format: "RCW 9.94A.525(1)(a)" -> title=9, chapter=94A, section=525, subsection=(1)(a)
+        pattern = r'RCW\s*(\d+)\.(\w+)\.(\d+)(?:\(([^)]+(?:\([^)]+\))*)\))?'
+        match = re.match(pattern, rcw_citation, re.IGNORECASE)
+        
+        if not match:
+            # Try simpler pattern without subsection
+            simple_pattern = r'RCW\s*(\d+)\.(\w+)\.(\d+)'
+            match = re.match(simple_pattern, rcw_citation, re.IGNORECASE)
+            if not match:
+                logger.warning(f"Could not parse RCW: {rcw_citation}")
+                return None
+            title, chapter, section = match.groups()
+            subsection = None
+        else:
+            title, chapter, section, subsection = match.groups()
+        
+        # Normalize full_citation
+        full_citation = f"RCW {title}.{chapter}.{section}"
+        if subsection:
+            full_citation += f"({subsection})"
+        
+        # Try to get existing
+        result = conn.execute(text("""
+            SELECT rcw_id FROM rcw_dim WHERE full_citation = :full_citation
+        """), {'full_citation': full_citation})
+        
+        row = result.fetchone()
+        if row:
+            return row.rcw_id
+        
+        # Create new entry
+        try:
+            result = conn.execute(text("""
+                INSERT INTO rcw_dim (title, chapter, section, subsection, full_citation)
+                VALUES (:title, :chapter, :section, :subsection, :full_citation)
+                ON CONFLICT (full_citation) DO UPDATE SET full_citation = EXCLUDED.full_citation
+                RETURNING rcw_id
+            """), {
+                'title': title,
+                'chapter': chapter,
+                'section': section,
+                'subsection': subsection,
+                'full_citation': full_citation
+            })
+            rcw_id = result.fetchone().rcw_id
+            logger.info(f"Created RCW in rcw_dim: {full_citation} (ID: {rcw_id})")
+            return rcw_id
+        except Exception as e:
+            logger.warning(f"Failed to create RCW entry: {e}")
+            return None
     
     def _insert_argument(self, conn, case_id: int, issue_id: int, side: str, argument_text: str) -> int:
         """

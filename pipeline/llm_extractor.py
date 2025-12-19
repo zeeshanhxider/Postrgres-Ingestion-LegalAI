@@ -25,7 +25,9 @@ CRITICAL RULES - FOLLOW EXACTLY:
 3. If information is NOT explicitly mentioned in the text, return null. Do NOT infer OR guess.
 4. Do NOT hallucinate information. If uncertain, use null.
 5. Escape all double quotes within string values with backslash.
-6. For enum fields with options, choose exactly ONE value OR null if unclear."""
+6. For enum fields with options, choose exactly ONE value OR null if unclear.
+7. CRITICAL: Extract ALL distinct legal issues - most appellate cases have 2-5 separate issues.
+8. CRITICAL: winner_legal_role is WHO WON (a party role like Appellant/Respondent), NOT the outcome."""
 
 EXTRACTION_PROMPT = """Analyze this Washington State court opinion and extract structured data.
 
@@ -38,10 +40,23 @@ INSTRUCTIONS:
 - Do NOT guess OR infer. Only extract what is clearly written.
 - Choose exactly ONE value for enum fields, OR null if ambiguous.
 
+CRITICAL ISSUE EXTRACTION RULES:
+- Appellate cases typically address 2-5 DISTINCT legal issues. Extract EACH ONE separately.
+- Look for: "Issue 1:", "First,", "Second,", "We also address", "The defendant argues", "Appellant contends"
+- Each issue should have its OWN entry in the issues array with its specific outcome.
+- DO NOT combine multiple issues into one generic summary.
+- If the court addresses multiple arguments, each is a separate issue.
+
+CRITICAL WINNER VS OUTCOME DISTINCTION:
+- "outcome" = What happened: Affirmed, Reversed, Remanded, Dismissed, or Mixed
+- "winner_legal_role" = WHO WON: Appellant, Respondent, Petitioner, State, or Neither
+- NEVER put "Affirmed" or "Reversed" in winner_legal_role - those are outcomes, not parties!
+- If Affirmed → winner is usually Respondent. If Reversed → winner is usually Appellant.
+
 Return this JSON structure:
 {{
     "summary": "Comprehensive 5-6 sentence summary: 1) Key background facts, 2) Procedural history, 3) Primary legal issues, 4) Court's reasoning, 5) Final disposition. Use null if document is unclear.",
-    "case_category": "Choose ONE: Criminal, Civil, Family, Administrative, Juvenile, Real Property, Tort, Contract, Constitutional, Employment, Tax, Insurance, Probate, Guardianship, Environmental, Bankruptcy, Workers Compensation, Medical Malpractice, Personal Injury, DUI, Domestic Violence, OR Other",
+    "case_category": "Choose ONE: Criminal, Civil, Family, Administrative, Juvenile, Real Property, Tort Law, Contract, Constitutional, Employment, Tax, Insurance, Probate, Guardianship, Environmental, Bankruptcy, Workers Compensation, Medical Malpractice, Personal Injury, DUI, Domestic Violence, OR Other",
     "originating_court": {{
         "county": "County name only (e.g., 'King', 'Spokane') OR null if not stated",
         "court_name": "Full lower court name OR null if not stated",
@@ -49,9 +64,9 @@ Return this JSON structure:
         "source_docket_number": "Lower court case number OR null if not mentioned"
     }},
     "outcome": {{
-        "disposition": "Choose ONE: Affirmed, Reversed, Remanded, Dismissed, Affirmed in part/Reversed in part, OR Other",
+        "disposition": "Choose ONE: Affirmed, Reversed, Remanded, Dismissed, Mixed",
         "details": "Specific outcome details OR null",
-        "prevailing_party": "Choose ONE: Appellant, Respondent, Petitioner, Plaintiff, Defendant, Split/Remanded, Neither, OR null if unclear",
+        "prevailing_party": "Choose ONE party role: Appellant, Respondent, Petitioner, Plaintiff, Defendant, Neither, OR null. NEVER use 'Affirmed' or 'Reversed' here.",
         "winner_personal_role": "Choose ONE if clearly applicable: Employee, Employer, Landlord, Tenant, Parent, Child, Patient, Doctor, Insurer, Insured, Homeowner, Contractor, State, Defendant, Plaintiff, OR null if not applicable OR unclear"
     }},
     "parties_parsed": [
@@ -84,21 +99,21 @@ Return this JSON structure:
         }}
     ],
     "legal_analysis": {{
-        "key_statutes_cited": ["List specific RCWs cited, e.g., 'RCW 9.94A.525'"],
+        "key_statutes_cited": ["List ALL specific RCWs cited, e.g., 'RCW 9.94A.525', 'RCW 42.56.010'"],
         "issues": [
             {{
-                "category": "Choose ONE: Criminal Law, Civil Procedure, Family Law, Constitutional Law, Evidence, Property, Contract, Tort, Employment, Administrative, Juvenile, Insurance, Tax, OR Other",
+                "category": "Choose ONE: Criminal Law, Civil Procedure, Family Law, Constitutional Law, Evidence, Property, Contract, Tort Law, Employment, Administrative, Juvenile, Insurance, Tax, OR Other",
                 "subcategory": "Specific sub-area (e.g., 'Search & Seizure', 'Child Custody', 'Summary Judgment') OR null",
-                "question": "The legal question presented OR null",
-                "ruling": "How the court ruled on this issue OR null",
-                "outcome": "Choose ONE: Affirmed, Reversed, Remanded, Dismissed, Mixed",
-                "winner_legal_role": "Choose ONE: Appellant, Respondent, Petitioner, State, Neither, OR null",
+                "question": "The specific legal question for THIS issue - be precise and distinct from other issues",
+                "ruling": "How the court specifically ruled on THIS issue",
+                "outcome": "Choose EXACTLY ONE: Affirmed, Reversed, Remanded, Dismissed, Mixed",
+                "winner_legal_role": "WHO WON this issue - Choose ONE party role: Appellant, Respondent, Petitioner, State, Neither. NEVER put 'Affirmed' or 'Reversed' here!",
                 "winner_personal_role": "Choose ONE if applicable: Employee, Employer, Landlord, Tenant, Parent, Child, State, Defendant, Plaintiff, Insurer, Insured, OR null",
-                "related_rcws": ["Specific RCWs for THIS issue"],
-                "keywords": ["2-4 key legal terms"],
+                "related_rcws": ["Specific RCWs cited for THIS issue only"],
+                "keywords": ["2-4 key legal terms specific to this issue"],
                 "confidence": "0.0-1.0 based on how clearly this info appears in text",
-                "appellant_argument": "Appellant's main argument on this issue (1-2 sentences) OR null if not stated",
-                "respondent_argument": "Respondent's main argument (1-2 sentences) OR null if not stated"
+                "appellant_argument": "Appellant's main argument on THIS specific issue (1-2 sentences) OR null if not stated",
+                "respondent_argument": "Respondent's main argument on THIS specific issue (1-2 sentences) OR null if not stated"
             }}
         ]
     }},
@@ -106,7 +121,9 @@ Return this JSON structure:
         "oral_argument_date": "Date in YYYY-MM-DD format OR null if not mentioned",
         "opinion_filed_date": "Date in YYYY-MM-DD format OR null if not clear"
     }}
-}}"""
+}}
+
+REMEMBER: Most appellate opinions have 2-5 distinct issues. Extract EACH issue as a separate entry in the issues array."""
 
 
 class LLMExtractor:
