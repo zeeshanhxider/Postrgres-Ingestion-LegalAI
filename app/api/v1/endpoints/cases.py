@@ -209,7 +209,7 @@ async def get_case_decisions(case_id: int):
         with engine.connect() as conn:
             query = text("""
                 SELECT issue_id, decision_stage, winner_legal_role, 
-                       winner_personal_role, decision_summary, appeal_outcome, issue_summary
+                       winner_personal_role, decision_summary, issue_outcome, issue_summary
                 FROM issues_decisions
                 WHERE case_id = :case_id
                 ORDER BY created_at

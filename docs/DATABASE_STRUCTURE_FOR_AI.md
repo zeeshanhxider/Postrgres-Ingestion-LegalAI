@@ -145,7 +145,7 @@ This database stores Washington State family law appellate cases extracted from 
 
 - `decision_stage` (CITEXT): "trial", "appeal", or NULL
 - `decision_summary` (TEXT): What the court decided on this issue
-- `appeal_outcome` (CITEXT): Outcome for THIS specific issue - "reversed", "affirmed", "remanded", "dismissed", "partial", "split", "remanded_partial", "remanded_full", or NULL
+- `issue_outcome` (CITEXT): Outcome for THIS specific issue - "reversed", "affirmed", "remanded", "dismissed", "partial", "split", "remanded_partial", "remanded_full", or NULL
 - `winner_legal_role` (CITEXT): "appellant", "respondent", or NULL
 - `winner_personal_role` (CITEXT): "husband", "wife", etc., or NULL
 
@@ -474,7 +474,7 @@ BOOLEAN: TRUE | FALSE
 
 **Critical:** Only populated for family law cases. NULL for civil/criminal cases.
 
-### Appeal Outcomes (`cases.appeal_outcome`, `issues_decisions.appeal_outcome`)
+### Appeal Outcomes (`cases.appeal_outcome`, `issues_decisions.issue_outcome`)
 
 ```
 "reversed" | "affirmed" | "remanded" | "dismissed" | "partial" |

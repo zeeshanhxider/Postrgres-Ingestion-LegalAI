@@ -330,11 +330,11 @@ class DatabaseInserter:
         query = text("""
             INSERT INTO issues_decisions (
                 case_id, category, subcategory, rcw_reference, keywords,
-                issue_summary, decision_stage, decision_summary, appeal_outcome,
+                issue_summary, decision_stage, decision_summary, issue_outcome,
                 winner_legal_role, winner_personal_role, created_at, updated_at
             ) VALUES (
                 :case_id, :category, :subcategory, :rcw_reference, :keywords,
-                :issue_summary, :decision_stage, :decision_summary, :appeal_outcome,
+                :issue_summary, :decision_stage, :decision_summary, :issue_outcome,
                 :winner_legal_role, :winner_personal_role, :created_at, :updated_at
             )
             RETURNING issue_id
@@ -350,7 +350,7 @@ class DatabaseInserter:
             'issue_summary': issue_data.issue_summary,
             'decision_stage': issue_data.decision_stage.value if issue_data.decision_stage else None,
             'decision_summary': issue_data.decision_summary,
-            'appeal_outcome': issue_data.appeal_outcome.value if issue_data.appeal_outcome else None,
+            'issue_outcome': issue_data.appeal_outcome.value if issue_data.appeal_outcome else None,
             'winner_legal_role': issue_data.winner_legal_role.value if issue_data.winner_legal_role else None,
             'winner_personal_role': issue_data.winner_personal_role.value if issue_data.winner_personal_role else None,
             'created_at': now,

@@ -984,7 +984,7 @@ class DatabaseInserter:
             'keywords': issue.keywords,  # PostgreSQL array
             'decision_stage': issue.decision_stage or 'appeal',
             'decision_summary': issue.decision_summary,
-            'appeal_outcome': issue.outcome,
+            'issue_outcome': issue.outcome,
             'winner_legal_role': issue.winner,
             'winner_personal_role': issue.winner_personal_role,
             'confidence_score': issue.confidence_score,
