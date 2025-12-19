@@ -17,89 +17,94 @@ from .models import (
 logger = logging.getLogger(__name__)
 
 # System prompt for legal case extraction
-SYSTEM_PROMPT = """You are an expert legal document analyzer for Washington State case law. Extract structured data from the provided court opinion into valid JSON format.
+SYSTEM_PROMPT = """You are an expert legal document analyzer for Washington State case law. Your task is to extract structured data from court opinions.
 
-CRITICAL RULES:
-1. Extract ONLY information explicitly stated in the document text.
-2. If information is not found, use null.
-3. Do not Hallucinate or guess relationships (e.g., do not guess which party "won" if it is a complex split decision).
-4. Escape all double quotes within strings to ensure the output is parseable JSON.
-5. Do not include markdown formatting (```json) in your response; return raw JSON only."""
+CRITICAL RULES - FOLLOW EXACTLY:
+1. Return ONLY valid JSON. No explanations, no markdown, no text before OR after the JSON.
+2. Extract ONLY information explicitly stated in the document. 
+3. If information is NOT explicitly mentioned in the text, return null. Do NOT infer OR guess.
+4. Do NOT hallucinate information. If uncertain, use null.
+5. Escape all double quotes within string values with backslash.
+6. For enum fields with options, choose exactly ONE value OR null if unclear."""
 
-EXTRACTION_PROMPT = """Analyze this Washington State court opinion and extract the following deep-level case details.
+EXTRACTION_PROMPT = """Analyze this Washington State court opinion and extract structured data.
 
 CASE TEXT:
 {text}
 
-Extract this JSON structure:
+INSTRUCTIONS:
+- Return ONLY the JSON object below. No other text.
+- If a field's value is not explicitly stated in the document, use null.
+- Do NOT guess OR infer. Only extract what is clearly written.
+- Choose exactly ONE value for enum fields, OR null if ambiguous.
+
+Return this JSON structure:
 {{
-    "summary": "Comprehensive 5-6 sentence summary covering the core points of the case. This must include: 1) The key background facts (what happened?), 2) The procedural history (how did it get to this court?), 3) The primary legal issues raised, 4) The court's reasoning on those issues, and 5) The final disposition.",
-    "case_category": "Criminal|Civil|Family|Administrative|Juvenile|Real Property|Tort|Contract|Constitutional|Employment|Other",
+    "summary": "Comprehensive 5-6 sentence summary: 1) Key background facts, 2) Procedural history, 3) Primary legal issues, 4) Court's reasoning, 5) Final disposition. Use null if document is unclear.",
+    "case_category": "Choose ONE: Criminal, Civil, Family, Administrative, Juvenile, Real Property, Tort, Contract, Constitutional, Employment, Tax, Insurance, Probate, Guardianship, Environmental, Bankruptcy, Workers Compensation, Medical Malpractice, Personal Injury, DUI, Domestic Violence, OR Other",
     "originating_court": {{
-        "county": "County where the case originated (e.g., 'King', 'Spokane')",
-        "court_name": "Full name of lower court (e.g., 'King County Superior Court')",
-        "trial_judge": "Name of the trial court judge if mentioned",
-        "source_docket_number": "Lower court case number if mentioned"
+        "county": "County name only (e.g., 'King', 'Spokane') OR null if not stated",
+        "court_name": "Full lower court name OR null if not stated",
+        "trial_judge": "Trial judge name OR null if not mentioned",
+        "source_docket_number": "Lower court case number OR null if not mentioned"
     }},
     "outcome": {{
-        "disposition": "Affirmed|Reversed|Remanded|Dismissed|Affirmed in part/Reversed in part|Other",
-        "details": "Specific details (e.g., 'Conviction affirmed, but remanded for resentencing due to offender score error')",
-        "prevailing_party": "Appellant|Respondent|Petitioner|Plaintiff|Defendant|Split/Remanded|Neither",
-        "winner_personal_role": "Descriptive role of the prevailing party: Employee|Employer|Landlord|Tenant|Parent|Child|Patient|Doctor|Insurer|Insured|Homeowner|Contractor|State|Defendant|Plaintiff|null"
+        "disposition": "Choose ONE: Affirmed, Reversed, Remanded, Dismissed, Affirmed in part/Reversed in part, OR Other",
+        "details": "Specific outcome details OR null",
+        "prevailing_party": "Choose ONE: Appellant, Respondent, Petitioner, Plaintiff, Defendant, Split/Remanded, Neither, OR null if unclear",
+        "winner_personal_role": "Choose ONE if clearly applicable: Employee, Employer, Landlord, Tenant, Parent, Child, Patient, Doctor, Insurer, Insured, Homeowner, Contractor, State, Defendant, Plaintiff, OR null if not applicable OR unclear"
     }},
     "parties_parsed": [
         {{
-            "name": "Full party name (e.g., 'Justin Dean Vanhollebeke')",
-            "appellate_role": "Appellant|Respondent|Petitioner|Cross-Appellant",
-            "trial_role": "Plaintiff|Defendant|State|Intervenor|null",
-            "type": "Individual|Government|Corporation|Organization|Union",
-            "personal_role": "Descriptive role: Employee|Employer|Landlord|Tenant|Parent|Child|Patient|Doctor|Insurer|Insured|Buyer|Seller|Homeowner|Contractor|Student|School|null"
+            "name": "Full party name as stated in document",
+            "appellate_role": "Choose ONE: Appellant, Respondent, Petitioner, Cross-Appellant",
+            "trial_role": "Choose ONE: Plaintiff, Defendant, State, Intervenor, OR null if not stated",
+            "type": "Choose ONE: Individual, Government, Corporation, Organization, Union",
+            "personal_role": "Choose ONE if clearly applicable: Employee, Employer, Landlord, Tenant, Parent, Child, Patient, Doctor, Insurer, Insured, Buyer, Seller, Homeowner, Contractor, Student, School, Prisoner, Victim, OR null if not applicable"
         }}
     ],
     "legal_representation": [
         {{
-            "attorney_name": "Full name of attorney (e.g., 'John Smith'). Look for attorney names under 'FOR APPELLANT', 'FOR RESPONDENT' or 'COUNSEL OF RECORD' sections.",
-            "representing": "Name of party they represent (e.g., 'State of Washington', 'John Doe')",
-            "firm_or_agency": "Law firm name, Prosecutor's Office, Public Defender, or Agency (e.g., 'King County Prosecutor', 'Nielsen Koch PLLC', 'Washington Appellate Project')"
+            "attorney_name": "Full attorney name from 'FOR APPELLANT', 'FOR RESPONDENT', OR 'COUNSEL' sections, OR null",
+            "representing": "Party name they represent OR null",
+            "firm_or_agency": "Law firm, Prosecutor's Office, Public Defender, OR Agency name, OR null"
         }}
     ],
     "judicial_panel": [
         {{
-            "judge_name": "Last name of appellate judge",
-            "role": "Author|Concurring|Dissenting|Signatory (e.g., 'WE CONCUR')"
+            "judge_name": "Appellate judge last name",
+            "role": "Choose ONE: Author, Concurring, Dissenting, Signatory"
         }}
     ],
     "cases_cited": [
         {{
-            "full_citation": "Full case citation as it appears (e.g., 'State v. Smith, 150 Wn.2d 489, 78 P.3d 1014 (2003)')",
+            "full_citation": "Full citation as written (e.g., 'State v. Smith, 150 Wn.2d 489, 78 P.3d 1014 (2003)')",
             "case_name": "Short name (e.g., 'State v. Smith')",
-            "relationship": "How this case relates to the opinion: 'relied_upon' (court relies on it), 'distinguished' (court distinguishes it), 'cited' (general citation), 'overruled' (court overrules it)"
+            "relationship": "Choose ONE: relied_upon, distinguished, cited, overruled"
         }}
     ],
     "legal_analysis": {{
-        "key_statutes_cited": [
-            "List of specific RCWs cited (e.g., 'RCW 9.94A.525', 'RCW 42.17A.765')"
-        ],
+        "key_statutes_cited": ["List specific RCWs cited, e.g., 'RCW 9.94A.525'"],
         "issues": [
             {{
-                "category": "Primary legal area: Criminal Law|Civil Procedure|Family Law|Constitutional Law|Evidence|Property|Contract|Tort|Employment|Administrative|Juvenile|Other",
-                "subcategory": "Specific sub-area (e.g., 'Search & Seizure', 'Child Custody', 'Summary Judgment', 'Sentencing', 'Hearsay')",
-                "question": "The legal question presented (e.g., 'Was the warrantless search of the borrowed truck lawful?')",
-                "ruling": "How the court ruled on this issue (e.g., 'Yes, the owner's consent overrode the borrower's expectation of privacy.')",
-                "outcome": "Affirmed|Reversed|Remanded|Dismissed|Mixed - for THIS specific issue",
-                "winner_legal_role": "Which legal role prevailed on this issue: Appellant|Respondent|Petitioner|State|Neither",
-                "winner_personal_role": "Personal/descriptive role of winner: Employee|Employer|Landlord|Tenant|Parent|Child|State|Defendant|Plaintiff|Insurer|Insured|null",
-                "related_rcws": ["Specific RCW statutes that apply to THIS issue (e.g., 'RCW 9.94A.525')"],
-                "keywords": ["2-4 key legal terms for this issue (e.g., 'fourth amendment', 'reasonable expectation', 'consent search')"],
-                "confidence": "0.0-1.0 confidence score for extraction accuracy",
-                "appellant_argument": "Summary of the appellant's main argument on this issue (1-2 sentences). What did the appellant claim or contend?",
-                "respondent_argument": "Summary of the respondent's main argument on this issue (1-2 sentences). What did the respondent argue in response?"
+                "category": "Choose ONE: Criminal Law, Civil Procedure, Family Law, Constitutional Law, Evidence, Property, Contract, Tort, Employment, Administrative, Juvenile, Insurance, Tax, OR Other",
+                "subcategory": "Specific sub-area (e.g., 'Search & Seizure', 'Child Custody', 'Summary Judgment') OR null",
+                "question": "The legal question presented OR null",
+                "ruling": "How the court ruled on this issue OR null",
+                "outcome": "Choose ONE: Affirmed, Reversed, Remanded, Dismissed, Mixed",
+                "winner_legal_role": "Choose ONE: Appellant, Respondent, Petitioner, State, Neither, OR null",
+                "winner_personal_role": "Choose ONE if applicable: Employee, Employer, Landlord, Tenant, Parent, Child, State, Defendant, Plaintiff, Insurer, Insured, OR null",
+                "related_rcws": ["Specific RCWs for THIS issue"],
+                "keywords": ["2-4 key legal terms"],
+                "confidence": "0.0-1.0 based on how clearly this info appears in text",
+                "appellant_argument": "Appellant's main argument on this issue (1-2 sentences) OR null if not stated",
+                "respondent_argument": "Respondent's main argument (1-2 sentences) OR null if not stated"
             }}
         ]
     }},
     "procedural_dates": {{
-        "oral_argument_date": "Date oral argument was held (e.g., '2024-01-10' or null if not mentioned)",
-        "opinion_filed_date": "Date this opinion was filed, usually in the header (e.g., '2024-01-16' or null if not clear)"
+        "oral_argument_date": "Date in YYYY-MM-DD format OR null if not mentioned",
+        "opinion_filed_date": "Date in YYYY-MM-DD format OR null if not clear"
     }}
 }}"""
 
@@ -525,7 +530,12 @@ class LLMExtractor:
         
         # Simple fields
         case.summary = llm_result.get("summary", "")
-        case.case_type = llm_result.get("case_type", "")
+        # Normalize case_type - take only the first value if pipe-separated
+        case_type_raw = llm_result.get("case_type", "")
+        if "|" in case_type_raw:
+            case.case_type = case_type_raw.split("|")[0].strip()
+        else:
+            case.case_type = case_type_raw
         case.county = llm_result.get("county")
         case.trial_court = llm_result.get("trial_court")
         case.trial_judge = llm_result.get("trial_judge")
