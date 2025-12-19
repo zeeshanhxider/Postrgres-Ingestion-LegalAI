@@ -251,9 +251,6 @@ class CaseProcessor:
             case.extraction_successful = llm_case.extraction_successful
             case.error_message = llm_case.error_message
             
-            # Store source file path
-            case.source_file_path = str(pdf_path.resolve())
-            
             logger.info(f"  Extraction complete: {len(case.parties)} parties, "
                        f"{len(case.judges)} judges, {len(case.issues)} issues")
             
@@ -386,7 +383,6 @@ class CaseProcessor:
                     case = ExtractedCase()
                     case.extraction_successful = False
                     case.error_message = str(e)
-                    case.source_file_path = str(pdf_path)
                     results.append((idx, case))
         
         # Sort by original order and extract cases

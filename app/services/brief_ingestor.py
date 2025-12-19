@@ -154,7 +154,6 @@ class BriefIngestor:
         - brief_type: Opening/Response/Reply
         - filing_party: Appellant/Respondent
         - source_file: Filename only
-        - source_file_path: Full path
         - year: Extracted from path
         """
         path = Path(file_path)
@@ -234,7 +233,6 @@ class BriefIngestor:
             'brief_type': brief_type,
             'filing_party': filing_party,
             'source_file': path.name,
-            'source_file_path': str(path.absolute()),
             'year': year
         }
     
@@ -263,13 +261,13 @@ class BriefIngestor:
                         case_id, case_file_id,
                         brief_type, filing_party,
                         page_count, word_count,
-                        summary, full_text, source_file, source_file_path, year,
+                        summary, full_text, source_file, year,
                         processing_status, extraction_timestamp
                     ) VALUES (
                         :case_id, :case_file_id,
                         :brief_type, :filing_party,
                         :page_count, :word_count,
-                        :summary, :full_text, :source_file, :source_file_path, :year,
+                        :summary, :full_text, :source_file, :year,
                         'processing', NOW()
                     )
                     RETURNING brief_id
@@ -285,7 +283,6 @@ class BriefIngestor:
                     'summary': summary,
                     'full_text': full_text,
                     'source_file': metadata['source_file'],
-                    'source_file_path': metadata['source_file_path'],
                     'year': metadata.get('year')
                 })
                 

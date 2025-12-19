@@ -147,7 +147,6 @@ These fields are managed by the system, not extracted:
 | ---------------------- | ------------------------------- | ---------------------------------- |
 | `case_id`              | PostgreSQL                      | Auto-increment primary key         |
 | `source_file`          | `source_file_info['filename']`  | PDF filename                       |
-| `source_file_path`     | `source_file_info['file_path']` | Full file path                     |
 | `extraction_timestamp` | System                          | `datetime.now()` at insertion time |
 | `created_at`           | System                          | `datetime.now()` at insertion time |
 | `updated_at`           | System                          | `datetime.now()` at insertion time |

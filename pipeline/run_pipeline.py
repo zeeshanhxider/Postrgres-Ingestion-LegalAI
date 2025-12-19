@@ -186,11 +186,11 @@ def process_batch(args):
         if case.extraction_successful:
             # Mark extraction success immediately (separate from insert)
             # This allows recovery if insert fails later
-            tracker.mark_extraction_success(case.source_file_path or "")
+            tracker.mark_extraction_success(case.metadata.pdf_filename or "")
             successful.append(case)
         else:
             tracker.mark_failed(
-                file_path=case.source_file_path or "",
+                file_path=case.metadata.pdf_filename or "",
                 error=case.error_message or "Unknown extraction error",
                 stage="extraction",
                 metadata_row=None
@@ -213,7 +213,7 @@ def process_batch(args):
     # Insert with progress tracking callback
     def on_insert_result(case, case_id, error, was_duplicate):
         """Callback for each insert result."""
-        file_path = case.source_file_path or ""
+        file_path = case.metadata.pdf_filename or ""
         if case_id:
             tracker.mark_success(file_path, case_id, was_duplicate)
         else:
@@ -270,7 +270,7 @@ def verify_case(args):
                 winner_legal_role, winner_personal_role,
                 opinion_type, publication_status,
                 decision_year, decision_month,
-                case_type, source_file, source_file_path,
+                case_type, source_file,
                 court_id, case_type_id, stage_type_id,
                 extraction_timestamp, processing_status,
                 LENGTH(full_text) as text_length,

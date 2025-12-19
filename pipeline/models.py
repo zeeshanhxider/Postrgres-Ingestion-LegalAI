@@ -134,7 +134,6 @@ class ExtractedCase:
     # Full text (from PDF)
     full_text: str = ""
     page_count: int = 0
-    source_file_path: Optional[str] = None  # Absolute path to PDF file
     
     # Embedding
     full_embedding: Optional[List[float]] = None  # 1024-dim vector for RAG

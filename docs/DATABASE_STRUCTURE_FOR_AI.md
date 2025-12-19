@@ -56,7 +56,6 @@ This database stores Washington State family law appellate cases extracted from 
 - `full_text` (TEXT): Complete case text
 - `full_embedding` (VECTOR(1024)): Document-level embedding for semantic search
 - `source_file` (CITEXT): Original PDF filename
-- `source_file_path` (TEXT): Full path to source PDF
 - `source_url` (TEXT): Original URL or court website link
 - `extraction_timestamp` (TIMESTAMP): When this case was extracted
 - `created_at`, `updated_at` (TIMESTAMP): Record timestamps

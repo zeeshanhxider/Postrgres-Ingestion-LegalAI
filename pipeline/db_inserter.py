@@ -252,15 +252,6 @@ class DatabaseInserter:
         # Calculate page count from full_text if available
         page_count = getattr(case, 'page_count', None)
         
-        # Calculate file size if path available
-        file_size = None
-        if case.source_file_path:
-            import os
-            try:
-                file_size = os.path.getsize(case.source_file_path)
-            except:
-                pass
-        
         query = text("""
             INSERT INTO documents (
                 case_id, stage_type_id, document_type_id,
@@ -285,7 +276,7 @@ class DatabaseInserter:
                 'document_type_id': document_type_id,
                 'title': meta.case_title or meta.pdf_filename or 'Unknown',
                 'source_url': meta.pdf_url,
-                'local_path': case.source_file_path,
+                'local_path': None,  # No longer storing local paths
                 'file_size': file_size,
                 'page_count': page_count,
                 'processing_status': 'completed',
@@ -397,7 +388,7 @@ class DatabaseInserter:
                 winner_legal_role, winner_personal_role,
                 publication_status, 
                 decision_year, decision_month,
-                case_type, source_file, source_file_path,
+                case_type, source_file,
                 court_id, case_type_id, stage_type_id,
                 extraction_timestamp, processing_status,
                 created_at, updated_at
@@ -411,7 +402,7 @@ class DatabaseInserter:
                 :winner_legal_role, :winner_personal_role,
                 :publication_status,
                 :decision_year, :decision_month,
-                :case_type, :source_file, :source_file_path,
+                :case_type, :source_file,
                 :court_id, :case_type_id, :stage_type_id,
                 :extraction_timestamp, :processing_status,
                 :created_at, :updated_at
@@ -439,7 +430,6 @@ class DatabaseInserter:
                 decision_month = EXCLUDED.decision_month,
                 case_type = EXCLUDED.case_type,
                 source_file = EXCLUDED.source_file,
-                source_file_path = EXCLUDED.source_file_path,
                 court_id = EXCLUDED.court_id,
                 case_type_id = EXCLUDED.case_type_id,
                 stage_type_id = EXCLUDED.stage_type_id,
@@ -492,7 +482,6 @@ class DatabaseInserter:
             'decision_month': meta.month or None,
             'case_type': case.case_type or None,
             'source_file': meta.pdf_filename or None,
-            'source_file_path': case.source_file_path,
             'court_id': dimension_ids.get('court_id'),
             'case_type_id': dimension_ids.get('case_type_id'),
             'stage_type_id': dimension_ids.get('stage_type_id'),

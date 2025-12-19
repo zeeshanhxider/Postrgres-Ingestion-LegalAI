@@ -346,7 +346,6 @@ class ContextNavigator:
                 'full_text': row.full_text,
                 'source_url': row.source_url,
                 'source_file': row.source_file,
-                'source_file_path': row.source_file_path,
                 'created_at': row.created_at,
                 'updated_at': row.updated_at,
                 # Statistics

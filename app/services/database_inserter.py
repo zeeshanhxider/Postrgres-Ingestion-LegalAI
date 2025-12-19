@@ -130,7 +130,7 @@ class DatabaseInserter:
                 oral_argument_date, published,
                 summary, full_text, source_url, overall_case_outcome, 
                 case_type_id, stage_type_id, court_id, parent_case_id,
-                case_type, source_file, source_file_path, extraction_timestamp,
+                case_type, source_file, extraction_timestamp,
                 winner_legal_role, winner_personal_role, appeal_outcome,
                 created_at, updated_at
             ) VALUES (
@@ -141,7 +141,7 @@ class DatabaseInserter:
                 :oral_argument_date, :published,
                 :summary, :full_text, :source_url, :overall_case_outcome,
                 :case_type_id, :stage_type_id, :court_id, :parent_case_id,
-                :case_type, :source_file, :source_file_path, :extraction_timestamp,
+                :case_type, :source_file, :extraction_timestamp,
                 :winner_legal_role, :winner_personal_role, :appeal_outcome,
                 :created_at, :updated_at
             )
@@ -179,7 +179,6 @@ class DatabaseInserter:
             'parent_case_id': None,  # Not used in batch processing currently
             'case_type': getattr(case_data, 'case_type', 'divorce'),  # Legacy field
             'source_file': source_file_info.get('filename') if source_file_info else None,
-            'source_file_path': source_file_info.get('file_path') if source_file_info else None,
             'extraction_timestamp': now,
             'winner_legal_role': case_data.winner_legal_role.value if case_data.winner_legal_role else None,
             'winner_personal_role': case_data.winner_personal_role.value if case_data.winner_personal_role else None,
@@ -630,7 +629,7 @@ class DatabaseInserter:
                 published, source_url, case_info_url, overall_case_outcome, appeal_outcome,
                 opinion_type, publication_status, decision_year, decision_month,
                 case_type_id, stage_type_id, court_id,
-                source_file, source_file_path, extraction_timestamp,
+                source_file, extraction_timestamp,
                 created_at, updated_at
             ) VALUES (
                 :case_file_id, :title, :court_level, :district, :county,
@@ -638,7 +637,7 @@ class DatabaseInserter:
                 :published, :source_url, :case_info_url, :overall_case_outcome, :appeal_outcome,
                 :opinion_type, :publication_status, :decision_year, :decision_month,
                 :case_type_id, :stage_type_id, :court_id,
-                :source_file, :source_file_path, :extraction_timestamp,
+                :source_file, :extraction_timestamp,
                 :created_at, :updated_at
             )
             RETURNING case_id
@@ -668,7 +667,6 @@ class DatabaseInserter:
             'stage_type_id': dimension_ids.get('stage_type_id'),
             'court_id': dimension_ids.get('court_id'),
             'source_file': source_file_info.get('filename') if source_file_info else None,
-            'source_file_path': source_file_info.get('file_path') if source_file_info else None,
             'extraction_timestamp': now,
             'created_at': now,
             'updated_at': now
@@ -932,7 +930,7 @@ class DatabaseInserter:
                 summary, source_url, case_info_url, overall_case_outcome, appeal_outcome,
                 opinion_type, publication_status, decision_year, decision_month,
                 case_type_id, stage_type_id, court_id,
-                case_type, source_file, source_file_path, extraction_timestamp,
+                case_type, source_file, extraction_timestamp,
                 winner_legal_role, winner_personal_role,
                 created_at, updated_at
             ) VALUES (
@@ -944,7 +942,7 @@ class DatabaseInserter:
                 :summary, :source_url, :case_info_url, :overall_case_outcome, :appeal_outcome,
                 :opinion_type, :publication_status, :decision_year, :decision_month,
                 :case_type_id, :stage_type_id, :court_id,
-                :case_type, :source_file, :source_file_path, :extraction_timestamp,
+                :case_type, :source_file, :extraction_timestamp,
                 :winner_legal_role, :winner_personal_role,
                 :created_at, :updated_at
             )
@@ -999,7 +997,6 @@ class DatabaseInserter:
             
             # === SOURCE FILE INFO ===
             'source_file': source_file_info.get('filename') if source_file_info else None,
-            'source_file_path': source_file_info.get('file_path') if source_file_info else None,
             
             # === TIMESTAMPS ===
             'extraction_timestamp': now,

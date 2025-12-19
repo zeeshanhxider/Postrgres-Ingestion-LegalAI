@@ -51,7 +51,6 @@ class CaseBase(BaseModel):
     
     # Source file information
     source_file: Optional[str] = Field(None, description="Original PDF filename")
-    source_file_path: Optional[str] = Field(None, description="Full path to source PDF file")
     source_url: Optional[str] = Field(None, description="Original URL or link to the case")
     extraction_timestamp: Optional[datetime] = Field(None, description="When this case was extracted")
 
@@ -98,7 +97,6 @@ class CaseCreate(BaseModel):
     
     # Source file information for traceability
     source_file: Optional[str] = None
-    source_file_path: Optional[str] = None
     extraction_timestamp: Optional[str] = None
 
 

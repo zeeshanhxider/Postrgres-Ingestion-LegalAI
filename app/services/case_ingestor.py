@@ -486,7 +486,6 @@ class LegalCaseIngestor:
                     full_text = :full_text,
                     full_embedding = :embedding,
                     source_file = :source_file,
-                    source_file_path = :source_file_path,
                     extraction_timestamp = :extraction_timestamp,
                     updated_at = :updated_at
                 WHERE case_id = :case_id
@@ -497,7 +496,6 @@ class LegalCaseIngestor:
                 'full_text': full_text,
                 'embedding': embedding,
                 'source_file': source_file_info.get('filename') if source_file_info else None,
-                'source_file_path': source_file_info.get('file_path') if source_file_info else None,
                 'extraction_timestamp': datetime.now(),
                 'updated_at': datetime.now()
             })
