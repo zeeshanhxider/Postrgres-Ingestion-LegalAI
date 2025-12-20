@@ -541,9 +541,27 @@ class DatabaseInserter:
         if meta.division:
             docket = f"{meta.case_number}-{meta.division}"
         
+        # Construct title: prefer CSV title, else build from parties
+        title = meta.case_title
+        if not title and case.parties:
+            # Build "Appellant v. Respondent" style title from parties
+            appellants = [p.name for p in case.parties if p.role and 'appellant' in p.role.lower()]
+            respondents = [p.name for p in case.parties if p.role and 'respondent' in p.role.lower()]
+            if appellants and respondents:
+                title = f"{appellants[0]} v. {respondents[0]}"
+            elif appellants:
+                title = f"{appellants[0]} v. Unknown"
+            elif respondents:
+                title = f"Unknown v. {respondents[0]}"
+            elif case.parties:
+                # Just use first party name
+                title = case.parties[0].name
+        if not title:
+            title = meta.pdf_filename or 'Unknown'
+        
         params = {
             'case_file_id': meta.case_number or None,
-            'title': meta.case_title or 'Unknown',
+            'title': title,
             'court_level': meta.court_level or None,
             'court': court,
             'district': f"Division {meta.division}" if meta.division else None,

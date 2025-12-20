@@ -200,11 +200,28 @@ class CaseProcessor:
         # Initialize result
         case = ExtractedCase()
         
+        # ALWAYS set pdf_filename from the actual file path
+        case.metadata.pdf_filename = pdf_path.name
+        
         try:
             # Step 1: Parse metadata if provided
             if metadata_row:
                 case.metadata = self.parse_metadata_row(metadata_row)
+                # Ensure pdf_filename is set even if CSV doesn't have it
+                if not case.metadata.pdf_filename:
+                    case.metadata.pdf_filename = pdf_path.name
                 logger.info(f"  Metadata: {case.metadata.case_number} - {case.metadata.case_title}")
+            else:
+                # No CSV metadata - try to extract basic info from filename
+                # Format: "39300-3_III.pdf" -> case_number="39300-3", division="III"
+                stem = pdf_path.stem  # e.g., "39300-3_III"
+                if '_' in stem:
+                    parts = stem.rsplit('_', 1)
+                    case.metadata.case_number = parts[0]
+                    case.metadata.division = parts[1] if len(parts) > 1 else ""
+                else:
+                    case.metadata.case_number = stem
+                logger.warning(f"  No CSV metadata found for {pdf_path.name} - using filename info")
             
             # Step 2: Extract text from PDF
             logger.info("  Extracting PDF text...")
