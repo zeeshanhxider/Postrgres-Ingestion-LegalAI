@@ -1149,6 +1149,21 @@ class DatabaseInserter:
             return 'Remanded'
         if 'mixed' in outcome_lower:
             return 'Mixed'
+        # "Denied" typically means the appellant's request was denied = Affirmed lower court
+        if 'denied' in outcome_lower or 'deny' in outcome_lower:
+            return 'Affirmed'
+        # "Granted" typically means reversal or remand
+        if 'granted' in outcome_lower or 'grant' in outcome_lower:
+            return 'Reversed'
+        # "Vacated" is similar to Reversed
+        if 'vacat' in outcome_lower:
+            return 'Reversed'
+        # "Sustained" means the objection/ruling was upheld = Affirmed
+        if 'sustain' in outcome_lower:
+            return 'Affirmed'
+        # "Overruled" means the objection/ruling was rejected
+        if 'overrul' in outcome_lower:
+            return 'Reversed'
         
         # If doesn't match any pattern, log and return as-is (will fail constraint)
         logger.warning(f"Unknown issue_outcome value: {outcome}")
@@ -1336,7 +1351,9 @@ class DatabaseInserter:
         case_to_embed_idx = {}  # Map case to its embedding index
         for i, case in enumerate(cases):
             if case.full_text and len(case.full_text) > 100:
-                embed_text = f"{case.summary}\n\n{case.full_text[:4000]}"
+                # Handle None summary
+                summary_part = case.summary or ""
+                embed_text = f"{summary_part}\n\n{case.full_text[:4000]}" if summary_part else case.full_text[:4000]
                 case_to_embed_idx[id(case)] = len(embed_texts)
                 embed_texts.append(embed_text)
             else:

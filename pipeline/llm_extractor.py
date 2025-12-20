@@ -55,7 +55,7 @@ CRITICAL WINNER VS OUTCOME DISTINCTION:
 
 Return this JSON structure:
 {{
-    "summary": "Comprehensive 5-6 sentence summary: 1) Key background facts, 2) Procedural history, 3) Primary legal issues, 4) Court's reasoning, 5) Final disposition. Use null if document is unclear.",
+    "summary": "REQUIRED: Comprehensive 5-6 sentence summary covering: 1) Key background facts, 2) Procedural history, 3) Primary legal issues, 4) Court's reasoning, 5) Final disposition. ALWAYS provide a summary - do not use null.",
     "case_category": "Choose ONE: Criminal, Civil, Family, Administrative, Juvenile, Real Property, Tort Law, Contract, Constitutional, Employment, Tax, Insurance, Probate, Guardianship, Environmental, Bankruptcy, Workers Compensation, Medical Malpractice, Personal Injury, DUI, Domestic Violence, OR Other",
     "originating_court": {{
         "county": "County name only (e.g., 'King', 'Spokane') OR null if not stated",
@@ -562,8 +562,8 @@ class LLMExtractor:
             dates = llm_result["procedural_dates"]
             llm_result["opinion_filed_date"] = dates.get("opinion_filed_date")
         
-        # Simple fields
-        case.summary = llm_result.get("summary", "")
+        # Simple fields - ensure None values become empty strings
+        case.summary = llm_result.get("summary") or ""
         # Normalize case_type - take only the first value if pipe-separated
         case_type_raw = llm_result.get("case_type", "")
         if "|" in case_type_raw:

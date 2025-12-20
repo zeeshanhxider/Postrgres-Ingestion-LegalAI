@@ -171,35 +171,7 @@ def process_batch(args):
     if args.csv:
         metadata_map = processor.load_metadata_csv(args.csv)
     
-    # Process cases with progress tracking
-    cases = processor.process_batch(
-        pdf_dir=args.pdf_dir,
-        metadata_csv=args.csv,
-        limit=None,  # We already filtered files
-        parallel=parallel,
-        pdf_files=pdf_files  # Pass specific files to process
-    )
-    
-    # Track extraction results - mark successes AND failures
-    successful = []
-    for case in cases:
-        if case.extraction_successful:
-            # Mark extraction success immediately (separate from insert)
-            # This allows recovery if insert fails later
-            tracker.mark_extraction_success(case.metadata.pdf_filename or "")
-            successful.append(case)
-        else:
-            tracker.mark_failed(
-                file_path=case.metadata.pdf_filename or "",
-                error=case.error_message or "Unknown extraction error",
-                stage="extraction",
-                metadata_row=None
-            )
-    
-    logger.info(f"[EXTRACTION COMPLETE] {len(successful)} extracted, {len(cases) - len(successful)} failed")
-    print(f"\n>>> Starting INSERT phase for {len(successful)} cases with {max_workers} workers...", flush=True)
-    
-    # Insert all successful cases with per-case tracking
+    # Initialize database inserter once (reused for all batches)
     db_url = Config.get_database_url()
     inserter = DatabaseInserter.from_url(db_url, enable_rag=args.enable_rag)
     
@@ -213,7 +185,7 @@ def process_batch(args):
             phrase_filter_mode=args.phrase_filter
         )
     
-    # Insert with progress tracking callback
+    # Progress tracking callback
     def on_insert_result(case, case_id, error, was_duplicate):
         """Callback for each insert result."""
         file_path = case.metadata.pdf_filename or ""
@@ -222,11 +194,118 @@ def process_batch(args):
         else:
             tracker.mark_failed(file_path, error or "Unknown insert error", stage="insert")
     
-    results = inserter.insert_batch(
-        successful, 
-        max_workers=max_workers,
-        progress_callback=on_insert_result
-    )
+    # Determine batch size (0 means process all at once - original behavior)
+    batch_size = args.batch_size if hasattr(args, 'batch_size') else 10
+    
+    # Aggregate results across all batches
+    total_results = {'success': 0, 'failed': 0, 'case_ids': [], 'duplicates': 0}
+    total_extracted = 0
+    total_extraction_failed = 0
+    
+    # STREAMING BATCH PROCESSING
+    # Process files in chunks: extract → embed → insert → repeat
+    if batch_size > 0 and len(pdf_files) > batch_size:
+        num_batches = (len(pdf_files) + batch_size - 1) // batch_size
+        logger.info(f"[STREAMING MODE] Processing {len(pdf_files)} files in {num_batches} batches of {batch_size}")
+        
+        for batch_num in range(num_batches):
+            batch_start = batch_num * batch_size
+            batch_end = min(batch_start + batch_size, len(pdf_files))
+            batch_files = pdf_files[batch_start:batch_end]
+            
+            print(f"\n{'='*50}", flush=True)
+            print(f"BATCH {batch_num + 1}/{num_batches} ({len(batch_files)} files)", flush=True)
+            print(f"{'='*50}", flush=True)
+            
+            # Step 1: EXTRACT this batch
+            logger.info(f"[Batch {batch_num + 1}] Extracting {len(batch_files)} PDFs...")
+            batch_cases = processor.process_batch(
+                pdf_dir=args.pdf_dir,
+                metadata_csv=args.csv,
+                limit=None,
+                parallel=parallel,
+                pdf_files=batch_files
+            )
+            
+            # Track extraction results
+            batch_successful = []
+            for case in batch_cases:
+                if case.extraction_successful:
+                    tracker.mark_extraction_success(case.metadata.pdf_filename or "")
+                    batch_successful.append(case)
+                else:
+                    total_extraction_failed += 1
+                    tracker.mark_failed(
+                        file_path=case.metadata.pdf_filename or "",
+                        error=case.error_message or "Unknown extraction error",
+                        stage="extraction",
+                        metadata_row=None
+                    )
+            
+            total_extracted += len(batch_successful)
+            logger.info(f"[Batch {batch_num + 1}] Extracted: {len(batch_successful)}/{len(batch_cases)}")
+            
+            # Step 2: EMBED + INSERT this batch
+            if batch_successful:
+                logger.info(f"[Batch {batch_num + 1}] Embedding + inserting {len(batch_successful)} cases...")
+                batch_results = inserter.insert_batch(
+                    batch_successful,
+                    max_workers=max_workers,
+                    progress_callback=on_insert_result
+                )
+                
+                # Aggregate results
+                total_results['success'] += batch_results['success']
+                total_results['failed'] += batch_results['failed']
+                total_results['duplicates'] += batch_results.get('duplicates', 0)
+                total_results['case_ids'].extend(batch_results.get('case_ids', []))
+                
+                logger.info(f"[Batch {batch_num + 1}] Inserted: {batch_results['success']}, Failed: {batch_results['failed']}")
+            
+            # Save checkpoint after each batch
+            tracker.save_checkpoint()
+        
+        results = total_results
+        
+    else:
+        # Original behavior: process all at once
+        logger.info("[ALL-AT-ONCE MODE] Processing all files together")
+        
+        # Process cases with progress tracking
+        cases = processor.process_batch(
+            pdf_dir=args.pdf_dir,
+            metadata_csv=args.csv,
+            limit=None,
+            parallel=parallel,
+            pdf_files=pdf_files
+        )
+        
+        # Track extraction results
+        successful = []
+        for case in cases:
+            if case.extraction_successful:
+                tracker.mark_extraction_success(case.metadata.pdf_filename or "")
+                successful.append(case)
+            else:
+                tracker.mark_failed(
+                    file_path=case.metadata.pdf_filename or "",
+                    error=case.error_message or "Unknown extraction error",
+                    stage="extraction",
+                    metadata_row=None
+                )
+        
+        total_extracted = len(successful)
+        total_extraction_failed = len(cases) - len(successful)
+        
+        logger.info(f"[EXTRACTION COMPLETE] {len(successful)} extracted, {total_extraction_failed} failed")
+        print(f"\n>>> Starting INSERT phase for {len(successful)} cases with {max_workers} workers...", flush=True)
+        
+        # Insert all successful cases
+        results = inserter.insert_batch(
+            successful,
+            max_workers=max_workers,
+            progress_callback=on_insert_result
+        )
     
     # Finish job
     tracker.finish_job()
@@ -240,10 +319,13 @@ def process_batch(args):
     print(f"Batch Processing Complete", flush=True)
     print(f"{'='*50}", flush=True)
     print(f"  Total PDFs: {len(all_pdf_files)}", flush=True)
-    print(f"  Extracted: {len(successful)}", flush=True)
+    print(f"  Extracted: {total_extracted}", flush=True)
+    print(f"  Extraction Failed: {total_extraction_failed}", flush=True)
     print(f"  Inserted: {results['success']}", flush=True)
     print(f"  Duplicates Updated: {results.get('duplicates', 0)}", flush=True)
-    print(f"  Failed: {results['failed']}", flush=True)
+    print(f"  Insert Failed: {results['failed']}", flush=True)
+    if hasattr(args, 'batch_size') and args.batch_size > 0:
+        print(f"  Batch Size: {args.batch_size}", flush=True)
     if args.enable_rag:
         print(f"  RAG mode: chunks={args.chunk_embeddings}, phrases={args.phrase_filter}", flush=True)
     
@@ -400,6 +482,12 @@ Examples:
         type=int,
         default=4,
         help='Number of parallel workers for batch processing (default: 4)'
+    )
+    parser.add_argument(
+        '--batch-size',
+        type=int,
+        default=10,
+        help='Number of cases to extract, embed, and insert before moving to next batch (default: 10). Use 0 for all-at-once processing.'
     )
     parser.add_argument(
         '--sequential',
