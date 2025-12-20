@@ -251,6 +251,7 @@ class DatabaseInserter:
         
         # Calculate page count from full_text if available
         page_count = getattr(case, 'page_count', None)
+        file_size = None  # Not tracking file size
         
         query = text("""
             INSERT INTO documents (

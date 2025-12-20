@@ -179,7 +179,7 @@ class RAGProcessor:
             # Step 6: Extract phrases for the entire case
             try:
                 phrase_count = self.phrase_extractor.process_case_phrases_from_text(
-                    case_id, full_text
+                    case_id, full_text, document_id=document_id
                 )
                 phrases_extracted = phrase_count
             except Exception as e:
