@@ -867,37 +867,68 @@ class DatabaseInserter:
         lookup = category.strip().lower()
         return self.CATEGORY_NORMALIZATION.get(lookup, category.strip())
     
-    def _resolve_taxonomy_id(self, conn, category: Optional[str], subcategory: Optional[str]) -> Optional[int]:
+    def _resolve_taxonomy_id(self, conn, case_type: Optional[str], category: Optional[str], subcategory: Optional[str]) -> Optional[int]:
         """
-        Resolve category/subcategory to taxonomy_id from legal_taxonomy table.
+        Resolve case_type/category/subcategory to taxonomy_id from legal_taxonomy table.
         Creates new taxonomy entries if they don't exist (upsert behavior).
-        Normalizes category names to canonical forms.
+        Uses 3-level hierarchy: case_type -> category -> subcategory.
         
         Args:
             conn: Database connection
-            category: Issue category (e.g., 'Criminal Law')
-            subcategory: Issue subcategory (e.g., 'Jury Selection and Batson Challenges')
+            case_type: Top-level case type (e.g., 'Criminal', 'Family', 'Civil')
+            category: Major topic bucket (e.g., 'Parenting Plan', 'Sentencing')
+            subcategory: Specific detail (e.g., 'Residential Schedules', 'Exceptional Sentence')
             
         Returns:
-            taxonomy_id for the subcategory (or category if no subcategory), or None
+            taxonomy_id for the most specific level available, or None
         """
-        if not category:
+        if not case_type:
             return None
         
-        # Normalize category to canonical form
-        category = self._normalize_category(category)
-        if not category:
+        # Normalize case_type to canonical form
+        case_type = case_type.strip()
+        if not case_type:
             return None
         
-        # Step 1: Get or create the category entry
-        # Use COALESCE(-1) to match the unique index on (COALESCE(parent_id, -1), name, level_type)
-        cat_query = text("""
+        # Step 1: Get or create the case_type entry (top level)
+        area_query = text("""
             INSERT INTO legal_taxonomy (parent_id, name, level_type)
-            VALUES (NULL, :name, 'category')
+            VALUES (NULL, :name, 'case_type')
             ON CONFLICT (COALESCE(parent_id, -1), name, level_type) DO NOTHING
             RETURNING taxonomy_id
         """)
-        cat_result = conn.execute(cat_query, {'name': category})
+        area_result = conn.execute(area_query, {'name': case_type})
+        row = area_result.fetchone()
+        
+        if row:
+            area_id = row.taxonomy_id
+        else:
+            # Entry already exists, fetch it
+            fetch_area = text("""
+                SELECT taxonomy_id FROM legal_taxonomy 
+                WHERE parent_id IS NULL AND name = :name AND level_type = 'case_type'
+            """)
+            result = conn.execute(fetch_area, {'name': case_type}).fetchone()
+            if not result:
+                return None
+            area_id = result.taxonomy_id
+        
+        # If no category, return the area_id
+        if not category:
+            return area_id
+        
+        category = category.strip()
+        if not category:
+            return area_id
+        
+        # Step 2: Get or create the category entry linked to the area
+        cat_query = text("""
+            INSERT INTO legal_taxonomy (parent_id, name, level_type)
+            VALUES (:parent_id, :name, 'category')
+            ON CONFLICT (COALESCE(parent_id, -1), name, level_type) DO NOTHING
+            RETURNING taxonomy_id
+        """)
+        cat_result = conn.execute(cat_query, {'parent_id': area_id, 'name': category})
         row = cat_result.fetchone()
         
         if row:
@@ -906,9 +937,12 @@ class DatabaseInserter:
             # Entry already exists, fetch it
             fetch_cat = text("""
                 SELECT taxonomy_id FROM legal_taxonomy 
-                WHERE parent_id IS NULL AND name = :name AND level_type = 'category'
+                WHERE parent_id = :parent_id AND name = :name AND level_type = 'category'
             """)
-            category_id = conn.execute(fetch_cat, {'name': category}).fetchone().taxonomy_id
+            result = conn.execute(fetch_cat, {'parent_id': area_id, 'name': category}).fetchone()
+            if not result:
+                return area_id
+            category_id = result.taxonomy_id
         
         # If no subcategory, return the category_id
         if not subcategory:
@@ -918,7 +952,7 @@ class DatabaseInserter:
         if not subcategory:
             return category_id
         
-        # Step 2: Get or create the subcategory entry linked to the category
+        # Step 3: Get or create the subcategory entry linked to the category
         subcat_query = text("""
             INSERT INTO legal_taxonomy (parent_id, name, level_type)
             VALUES (:parent_id, :name, 'subcategory')
@@ -936,20 +970,23 @@ class DatabaseInserter:
                 SELECT taxonomy_id FROM legal_taxonomy 
                 WHERE parent_id = :parent_id AND name = :name AND level_type = 'subcategory'
             """)
-            return conn.execute(fetch_subcat, {'parent_id': category_id, 'name': subcategory}).fetchone().taxonomy_id
+            result = conn.execute(fetch_subcat, {'parent_id': category_id, 'name': subcategory}).fetchone()
+            if result:
+                return result.taxonomy_id
+            return category_id
 
     def _insert_issue(self, conn, case_id: int, issue: Issue) -> int:
         """
         Insert an issue/decision record with full field population.
         Links RCW references from the issue to statutes_dim.
-        Links to legal_taxonomy via taxonomy_id.
+        Links to legal_taxonomy via taxonomy_id (3-level hierarchy).
         Links RCWs to rcw_dim and issue_rcw junction table.
         """
         # Resolve RCW reference (use first one as primary for backward compat)
         rcw_reference = self._resolve_rcw_reference(conn, issue.rcw_references)
         
-        # Resolve taxonomy_id from category/subcategory
-        taxonomy_id = self._resolve_taxonomy_id(conn, issue.category, issue.subcategory)
+        # Resolve taxonomy_id from case_type/category/subcategory (3 levels)
+        taxonomy_id = self._resolve_taxonomy_id(conn, issue.case_type, issue.category, issue.subcategory)
         
         # Normalize issue_outcome to 5 valid values
         normalized_outcome = self._normalize_issue_outcome(issue.outcome)

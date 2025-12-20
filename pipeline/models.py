@@ -77,8 +77,9 @@ class Statute:
 @dataclass
 class Issue:
     """A legal issue addressed in the case."""
-    category: str                       # "Criminal Law", "Civil Procedure", etc.
-    subcategory: str                    # "Search & Seizure", "Summary Judgment", etc.
+    case_type: str                      # "Criminal", "Civil", "Family", etc. (top level)
+    category: str                       # "Parenting Plan", "Sentencing", etc. (major bucket)
+    subcategory: str                    # "Residential Schedules", "Exceptional Sentence", etc. (specific detail)
     summary: str                        # Brief description of the issue (the legal question)
     outcome: Optional[str] = None       # "affirmed", "reversed", etc.
     winner: Optional[str] = None        # "Appellant", "Respondent" (legal role)

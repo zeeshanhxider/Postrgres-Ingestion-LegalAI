@@ -1,6 +1,5 @@
 from .courts import Court, CourtCreate, CourtUpdate, CourtResponse
 from .statutes import Statute, StatuteCreate, StatuteUpdate, StatuteResponse
-from .case_types import CaseType, CaseTypeCreate, CaseTypeUpdate, CaseTypeResponse
 from .stage_types import StageType, StageTypeCreate, StageTypeUpdate, StageTypeResponse
 from .document_types import DocumentType, DocumentTypeCreate, DocumentTypeUpdate, DocumentTypeResponse
 from .documents import Document, DocumentCreate, DocumentUpdate, DocumentResponse, DocumentWithRelations
@@ -23,7 +22,6 @@ __all__ = [
     # Statutes
     "Statute", "StatuteCreate", "StatuteUpdate", "StatuteResponse",
     # Dimension Tables
-    "CaseType", "CaseTypeCreate", "CaseTypeUpdate", "CaseTypeResponse",
     "StageType", "StageTypeCreate", "StageTypeUpdate", "StageTypeResponse", 
     "DocumentType", "DocumentTypeCreate", "DocumentTypeUpdate", "DocumentTypeResponse",
     # Documents

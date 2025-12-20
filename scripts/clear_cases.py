@@ -39,7 +39,6 @@ CASE_TABLES = [
     "cases",
     # Dimension tables (can accumulate over time)
     "courts_dim",
-    "case_types",
     "stage_types",
     "statutes_dim",
 ]

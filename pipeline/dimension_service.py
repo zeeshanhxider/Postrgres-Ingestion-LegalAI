@@ -89,7 +89,7 @@ class DimensionService:
         }
     
     def get_or_create_case_type(self, case_type: str, jurisdiction: str = "WA") -> Optional[int]:
-        """Get or create case type and return ID."""
+        """Get or create case type and return ID from legal_taxonomy."""
         if not case_type:
             return None
         
@@ -102,32 +102,34 @@ class DimensionService:
             return self._cache['case_types'][cache_key]
         
         with self.db.connect() as conn:
-            # Try to find existing
+            # Try to find existing in legal_taxonomy (level_type = 'case_type')
             query = text("""
-                SELECT case_type_id FROM case_types 
-                WHERE case_type = :case_type AND (jurisdiction = :jurisdiction OR jurisdiction IS NULL)
+                SELECT taxonomy_id FROM legal_taxonomy 
+                WHERE name = :case_type AND level_type = 'case_type'
             """)
-            result = conn.execute(query, {'case_type': normalized, 'jurisdiction': jurisdiction})
+            result = conn.execute(query, {'case_type': normalized})
             row = result.fetchone()
             
             if row:
-                case_type_id = row.case_type_id
+                case_type_id = row.taxonomy_id
             else:
-                # Create new with ON CONFLICT for race condition safety
+                # Create new case_type in legal_taxonomy
                 insert_query = text("""
-                    INSERT INTO case_types (case_type, description, jurisdiction, created_at)
-                    VALUES (:case_type, :description, :jurisdiction, NOW())
-                    ON CONFLICT (case_type) DO UPDATE SET case_type = EXCLUDED.case_type
-                    RETURNING case_type_id
+                    INSERT INTO legal_taxonomy (name, level_type, parent_id, created_at, updated_at)
+                    VALUES (:case_type, 'case_type', NULL, NOW(), NOW())
+                    ON CONFLICT DO NOTHING
+                    RETURNING taxonomy_id
                 """)
-                result = conn.execute(insert_query, {
-                    'case_type': normalized,
-                    'description': f"{normalized} case type",
-                    'jurisdiction': jurisdiction
-                })
-                case_type_id = result.fetchone().case_type_id
-                conn.commit()
-                logger.info(f"Created case type: {normalized} (ID: {case_type_id})")
+                result = conn.execute(insert_query, {'case_type': normalized})
+                row = result.fetchone()
+                if row:
+                    case_type_id = row.taxonomy_id
+                    conn.commit()
+                    logger.info(f"Created case type in legal_taxonomy: {normalized} (ID: {case_type_id})")
+                else:
+                    # Race condition - fetch again
+                    result = conn.execute(query, {'case_type': normalized})
+                    case_type_id = result.fetchone().taxonomy_id
             
             self._cache['case_types'][cache_key] = case_type_id
             return case_type_id

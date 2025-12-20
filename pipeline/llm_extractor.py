@@ -102,8 +102,9 @@ Return this JSON structure:
         "key_statutes_cited": ["List ALL specific RCWs cited, e.g., 'RCW 9.94A.525', 'RCW 42.56.010'"],
         "issues": [
             {{
-                "category": "Choose ONE: Criminal Law, Civil Procedure, Family Law, Constitutional Law, Evidence, Property, Contract, Tort Law, Employment, Administrative, Juvenile, Insurance, Tax, OR Other",
-                "subcategory": "Specific sub-area (e.g., 'Search & Seizure', 'Child Custody', 'Summary Judgment') OR null",
+                "case_type": "Choose ONE top-level case type: Criminal, Civil, Family, Administrative, Constitutional, Juvenile, Probate, Real Property, OR Other",
+                "category": "Major topic bucket within the area (e.g., 'Parenting Plan', 'Sentencing', 'Contract Breach', 'Summary Judgment')",
+                "subcategory": "Specific detail if applicable (e.g., 'Residential Schedules', 'Exceptional Sentence', 'Statute of Limitations') OR null",
                 "question": "The specific legal question for THIS issue - be precise and distinct from other issues",
                 "ruling": "How the court specifically ruled on THIS issue",
                 "outcome": "Choose EXACTLY ONE: Affirmed, Reversed, Remanded, Dismissed, Mixed",
@@ -642,8 +643,9 @@ class LLMExtractor:
                             pass
                     
                     case.issues.append(Issue(
-                        category=i.get("category", "Other"),
-                        subcategory=i.get("subcategory", "General"),
+                        case_type=i.get("case_type", "Other"),
+                        category=i.get("category", "General"),
+                        subcategory=i.get("subcategory") or "General",
                         summary=summary,
                         outcome=i.get("outcome"),
                         winner=i.get("winner") or i.get("winner_legal_role"),

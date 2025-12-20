@@ -33,7 +33,7 @@ class CaseBase(BaseModel):
     full_text: Optional[str] = Field(None, description="Full case text")
 
     # Enhanced type classification
-    case_type_id: Optional[int] = Field(None, description="References case_types.case_type_id")
+    case_type_id: Optional[int] = Field(None, description="References legal_taxonomy.taxonomy_id (case_type level)")
     stage_type_id: Optional[int] = Field(None, description="References stage_types.stage_type_id")
     court_id: Optional[int] = Field(None, description="References courts_dim.court_id")
     parent_case_id: Optional[int] = Field(None, description="References parent case ID")

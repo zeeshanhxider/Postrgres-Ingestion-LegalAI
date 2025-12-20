@@ -1,6 +1,7 @@
 """
 Dimension Table Service
-Handles lookups and creation of dimension table records (case_types, stage_types, document_types, courts).
+Handles lookups and creation of dimension table records (stage_types, document_types, courts).
+Case types are now managed via legal_taxonomy table.
 """
 
 import logging
@@ -23,36 +24,32 @@ class DimensionService:
         }
     
     def get_or_create_case_type(self, case_type: str, description: str = None, jurisdiction: str = "WA") -> int:
-        """Get or create case type and return ID"""
+        """Get or create case type and return ID from legal_taxonomy"""
         # Check cache first
         cache_key = f"{case_type}_{jurisdiction}"
         if cache_key in self._cache['case_types']:
             return self._cache['case_types'][cache_key]
         
         with self.db.connect() as conn:
-            # Try to find existing
-            query = text("SELECT case_type_id FROM case_types WHERE case_type = :case_type AND jurisdiction = :jurisdiction")
-            result = conn.execute(query, {'case_type': case_type, 'jurisdiction': jurisdiction})
+            # Try to find existing in legal_taxonomy
+            query = text("SELECT taxonomy_id FROM legal_taxonomy WHERE name = :case_type AND level_type = 'case_type'")
+            result = conn.execute(query, {'case_type': case_type})
             row = result.fetchone()
             
             if row:
-                case_type_id = row.case_type_id
+                case_type_id = row.taxonomy_id
                 logger.debug(f"Found existing case type: {case_type} -> ID {case_type_id}")
             else:
-                # Create new
+                # Create new in legal_taxonomy
                 insert_query = text("""
-                    INSERT INTO case_types (case_type, description, jurisdiction, created_at)
-                    VALUES (:case_type, :description, :jurisdiction, NOW())
-                    RETURNING case_type_id
+                    INSERT INTO legal_taxonomy (name, level_type, parent_id, created_at, updated_at)
+                    VALUES (:case_type, 'case_type', NULL, NOW(), NOW())
+                    RETURNING taxonomy_id
                 """)
-                result = conn.execute(insert_query, {
-                    'case_type': case_type,
-                    'description': description or f"{case_type} case type",
-                    'jurisdiction': jurisdiction
-                })
-                case_type_id = result.fetchone().case_type_id
+                result = conn.execute(insert_query, {'case_type': case_type})
+                case_type_id = result.fetchone().taxonomy_id
                 conn.commit()
-                logger.info(f"Created new case type: {case_type} -> ID {case_type_id}")
+                logger.info(f"Created new case type in legal_taxonomy: {case_type} -> ID {case_type_id}")
             
             # Cache result
             self._cache['case_types'][cache_key] = case_type_id
