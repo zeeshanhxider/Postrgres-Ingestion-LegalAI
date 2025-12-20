@@ -509,55 +509,14 @@ class BriefIngestor:
         return {'total_sentences': total_sentences}
     
     def _process_words(self, brief_id: int, chunks: List, chunk_ids: List[str]) -> Dict[str, int]:
-        """Process words for word-level indexing (reuses word_dictionary)"""
-        total_words = 0
+        """Process words for word-level indexing.
         
-        with self.db.connect() as conn:
-            trans = conn.begin()
-            
-            try:
-                for chunk, chunk_id in zip(chunks, chunk_ids):
-                    words = re.findall(r'\b\w+\b', chunk.text.lower())
-                    
-                    for pos, word in enumerate(words):
-                        if len(word) < 3:  # Skip very short words
-                            continue
-                        
-                        # Get or create word_id
-                        word_query = text("""
-                            INSERT INTO word_dictionary (word)
-                            VALUES (:word)
-                            ON CONFLICT (word) DO UPDATE SET word = EXCLUDED.word
-                            RETURNING word_id
-                        """)
-                        
-                        result = conn.execute(word_query, {'word': word})
-                        word_id = result.fetchone()[0]
-                        
-                        # Insert word occurrence
-                        occur_query = text("""
-                            INSERT INTO brief_word_occurrence (brief_id, chunk_id, word_id, position)
-                            VALUES (:brief_id, :chunk_id, :word_id, :position)
-                            ON CONFLICT (chunk_id, word_id, position) DO NOTHING
-                        """)
-                        
-                        conn.execute(occur_query, {
-                            'brief_id': brief_id,
-                            'chunk_id': chunk_id,
-                            'word_id': word_id,
-                            'position': pos
-                        })
-                        
-                        total_words += 1
-                
-                trans.commit()
-                
-            except Exception as e:
-                trans.rollback()
-                logger.error(f"Failed to process words: {str(e)}")
-                raise
-        
-        return {'total_words': total_words}
+        NOTE: brief_word_occurrence table was dropped in scalability migration (018).
+        We now rely on tsvector columns for full-text search.
+        This method is now a no-op but kept for API compatibility.
+        """
+        # brief_word_occurrence table removed - using tsvector instead
+        return {'total_words': 0}
     
     def _extract_phrases(self, brief_id: int, chunks: List) -> Dict[str, int]:
         """Extract legal phrases (2-5 grams)"""

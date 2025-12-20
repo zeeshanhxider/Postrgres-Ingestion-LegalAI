@@ -32,7 +32,7 @@ CASE_TABLES = [
     "issue_chunks",
     "issue_rcw",
     "issues_decisions",
-    "word_occurrence",
+    # Note: word_occurrence table was dropped in migration 018
     "embeddings",
     "documents",  # Links cases and briefs (case_id FK)
     "ingestion_batches",  # Tracks batch processing jobs
@@ -58,7 +58,7 @@ PROTECTED_TABLES = [
     "brief_citations",
     "brief_phrases",
     "brief_sentences",
-    "brief_word_occurrence",
+    # Note: brief_word_occurrence table was dropped in migration 018
     "arguments",
     "attorneys",
     "users",         # User accounts

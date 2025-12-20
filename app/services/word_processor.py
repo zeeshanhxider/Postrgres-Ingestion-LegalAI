@@ -218,73 +218,54 @@ class WordProcessor:
             }
     
     def _insert_word_occurrences(self, word_occurrences: List[Dict]) -> None:
-        """Insert word occurrences in batch with new sentence-based schema"""
-        if not word_occurrences:
-            return
-            
-        with self.db.connect() as conn:
-            # Use batch insert with new schema (sentence-based primary key)
-            insert_query = text("""
-                INSERT INTO word_occurrence (word_id, case_id, chunk_id, sentence_id, document_id, position)
-                VALUES (:word_id, :case_id, :chunk_id, :sentence_id, :document_id, :position)
-                ON CONFLICT (word_id, sentence_id, position) DO NOTHING
-            """)
-            
-            conn.execute(insert_query, word_occurrences)
-            conn.commit()
+        """Insert word occurrences in batch with new sentence-based schema
+        
+        NOTE: word_occurrence table was dropped in scalability migration (018).
+        We now rely on tsvector columns on case_chunks and case_sentences for full-text search.
+        This method is now a no-op but kept for API compatibility.
+        """
+        # word_occurrence table removed - using tsvector instead
+        pass
     
     def update_word_document_frequencies(self, case_id: int) -> None:
         """
         Update document frequency counts for words in a case
         This should be called after processing all chunks for a case
-        """
-        with self.db.connect() as conn:
-            # Update DF for words that appear in this case
-            update_query = text("""
-                UPDATE word_dictionary 
-                SET df = (
-                    SELECT COUNT(DISTINCT wo.case_id)
-                    FROM word_occurrence wo 
-                    WHERE wo.word_id = word_dictionary.word_id
-                )
-                WHERE word_id IN (
-                    SELECT DISTINCT word_id 
-                    FROM word_occurrence 
-                    WHERE case_id = :case_id
-                )
-            """)
-            
-            conn.execute(update_query, {'case_id': case_id})
-            conn.commit()
         
-        logger.debug(f"Updated document frequencies for case {case_id}")
+        NOTE: word_occurrence table was dropped in scalability migration (018).
+        This method is now a no-op but kept for API compatibility.
+        """
+        # word_occurrence table removed - using tsvector instead
+        logger.debug(f"Skipping document frequency update for case {case_id} (word_occurrence table removed)")
     
     def find_word_positions(self, word: str, case_id: int = None) -> List[Dict]:
         """
-        Find all positions of a word across cases/chunks
+        Find all positions of a word across cases/chunks using tsvector search.
+        
+        NOTE: word_occurrence table was dropped in scalability migration (018).
+        Now uses tsvector-based search on case_sentences table.
         
         Args:
             word: Word to search for
             case_id: Optional case ID to limit search
             
         Returns:
-            List of position information
+            List of sentence information where word appears
         """
         with self.db.connect() as conn:
             base_query = """
-                SELECT wo.case_id, wo.chunk_id, wo.position, wd.word
-                FROM word_occurrence wo
-                JOIN word_dictionary wd ON wo.word_id = wd.word_id
-                WHERE wd.word = :word
+                SELECT cs.case_id, cs.chunk_id, cs.sentence_id, cs.sentence_text
+                FROM case_sentences cs
+                WHERE cs.tsv @@ plainto_tsquery('english', :word)
             """
             
             params = {'word': word.lower()}
             
             if case_id:
-                base_query += " AND wo.case_id = :case_id"
+                base_query += " AND cs.case_id = :case_id"
                 params['case_id'] = case_id
             
-            base_query += " ORDER BY wo.case_id, wo.chunk_id, wo.position"
+            base_query += " ORDER BY cs.case_id, cs.chunk_id, cs.sentence_order LIMIT 1000"
             
             result = conn.execute(text(base_query), params)
             
@@ -292,74 +273,50 @@ class WordProcessor:
                 {
                     'case_id': row.case_id,
                     'chunk_id': row.chunk_id,
-                    'position': row.position,
-                    'word': row.word
+                    'sentence_id': row.sentence_id,
+                    'word': word.lower()
                 }
                 for row in result
             ]
     
     def find_phrase_positions(self, phrase: str, case_id: int = None) -> List[Dict]:
         """
-        Find all positions where a phrase occurs
+        Find all positions where a phrase occurs using tsvector search.
+        
+        NOTE: word_occurrence table was dropped in scalability migration (018).
+        Now uses tsvector-based search on case_sentences table.
         
         Args:
             phrase: Phrase to search for (space-separated words)
             case_id: Optional case ID to limit search
             
         Returns:
-            List of phrase position information
+            List of sentence information where phrase appears
         """
-        words = self.tokenize_text(phrase)
-        if len(words) < 2:
-            # Single word - use word search
-            return self.find_word_positions(words[0] if words else phrase, case_id)
-        
         with self.db.connect() as conn:
-            # Build a query to find consecutive word positions
-            # This is a complex query that finds sequences of words
-            query = """
-                WITH phrase_words AS (
-                    SELECT unnest(ARRAY[:words]) AS word, 
-                           generate_series(0, :word_count - 1) AS word_order
-                ),
-                word_positions AS (
-                    SELECT wo.case_id, wo.chunk_id, wo.position, pw.word_order
-                    FROM word_occurrence wo
-                    JOIN word_dictionary wd ON wo.word_id = wd.word_id
-                    JOIN phrase_words pw ON wd.word = pw.word
+            # Use phraseto_tsquery for phrase matching
+            base_query = """
+                SELECT cs.case_id, cs.chunk_id, cs.sentence_id, cs.sentence_text
+                FROM case_sentences cs
+                WHERE cs.tsv @@ phraseto_tsquery('english', :phrase)
             """
             
-            params = {
-                'words': words,
-                'word_count': len(words)
-            }
+            params = {'phrase': phrase.lower()}
             
             if case_id:
-                query += " WHERE wo.case_id = :case_id"
+                base_query += " AND cs.case_id = :case_id"
                 params['case_id'] = case_id
             
-            query += """
-                ),
-                phrase_candidates AS (
-                    SELECT case_id, chunk_id, position - word_order AS phrase_start,
-                           COUNT(*) as word_count
-                    FROM word_positions
-                    GROUP BY case_id, chunk_id, position - word_order
-                    HAVING COUNT(*) = :word_count
-                )
-                SELECT case_id, chunk_id, phrase_start as position
-                FROM phrase_candidates
-                ORDER BY case_id, chunk_id, phrase_start
-            """
+            base_query += " ORDER BY cs.case_id, cs.chunk_id, cs.sentence_order LIMIT 1000"
             
-            result = conn.execute(text(query), params)
+            result = conn.execute(text(base_query), params)
             
             return [
                 {
                     'case_id': row.case_id,
                     'chunk_id': row.chunk_id,
-                    'position': row.position,
-                    'phrase': phrase
+                    'sentence_id': row.sentence_id,
+                    'phrase': phrase.lower()
                 }
                 for row in result
             ]

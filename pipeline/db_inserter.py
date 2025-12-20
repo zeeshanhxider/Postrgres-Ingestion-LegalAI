@@ -374,7 +374,7 @@ class DatabaseInserter:
                 trans = conn.begin()
                 try:
                     # Delete in order due to foreign keys
-                    conn.execute(text("DELETE FROM word_occurrence WHERE sentence_id IN (SELECT sentence_id FROM case_sentences WHERE chunk_id IN (SELECT chunk_id FROM case_chunks WHERE case_id = :case_id))"), {'case_id': case_id})
+                    # Note: word_occurrence table was dropped in migration 018
                     conn.execute(text("DELETE FROM case_sentences WHERE chunk_id IN (SELECT chunk_id FROM case_chunks WHERE case_id = :case_id)"), {'case_id': case_id})
                     conn.execute(text("DELETE FROM case_phrases WHERE case_id = :case_id"), {'case_id': case_id})
                     conn.execute(text("DELETE FROM case_chunks WHERE case_id = :case_id"), {'case_id': case_id})

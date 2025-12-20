@@ -273,10 +273,10 @@ class RAGProcessor:
                             # Insert into embeddings table (not update case_chunks)
                             conn.execute(text("""
                                 INSERT INTO embeddings (
-                                    case_id, chunk_id, text, embedding,
+                                    case_id, chunk_id, document_id, text, embedding,
                                     chunk_order, section
                                 )
-                                SELECT case_id, chunk_id, text, :embedding,
+                                SELECT case_id, chunk_id, document_id, text, :embedding,
                                        chunk_order, section
                                 FROM case_chunks WHERE chunk_id = :chunk_id
                             """), {'embedding': embedding, 'chunk_id': chunk_id})

@@ -205,44 +205,25 @@ class WordProcessor:
         }
     
     def _insert_word_occurrences(self, conn, occurrences: List[Dict]) -> None:
-        """Insert word occurrences in batch."""
-        if not occurrences:
-            return
+        """Insert word occurrences in batch.
         
-        insert_query = text("""
-            INSERT INTO word_occurrence (word_id, case_id, chunk_id, sentence_id, document_id, position)
-            VALUES (:word_id, :case_id, :chunk_id, :sentence_id, :document_id, :position)
-            ON CONFLICT (word_id, sentence_id, position) DO NOTHING
-        """)
-        
-        # Batch insert
-        for occ in occurrences:
-            try:
-                conn.execute(insert_query, occ)
-            except Exception as e:
-                # Silently skip duplicates
-                pass
+        NOTE: word_occurrence table was dropped in scalability migration (018).
+        We now rely on tsvector columns on case_chunks and case_sentences for full-text search.
+        This method is now a no-op but kept for API compatibility.
+        """
+        # word_occurrence table removed - using tsvector instead
+        pass
     
     def update_document_frequencies(self, conn, case_id: int) -> None:
         """
         Update document frequency counts for words in a case.
         Should be called after processing all sentences for a case.
-        """
-        update_query = text("""
-            UPDATE word_dictionary 
-            SET df = (
-                SELECT COUNT(DISTINCT wo.case_id)
-                FROM word_occurrence wo 
-                WHERE wo.word_id = word_dictionary.word_id
-            )
-            WHERE word_id IN (
-                SELECT DISTINCT word_id 
-                FROM word_occurrence 
-                WHERE case_id = :case_id
-            )
-        """)
         
-        conn.execute(update_query, {'case_id': case_id})
+        NOTE: word_occurrence table was dropped in scalability migration (018).
+        This method is now a no-op but kept for API compatibility.
+        """
+        # word_occurrence table removed - using tsvector instead
+        pass
     
     def clear_cache(self):
         """Clear the word ID cache."""
@@ -250,32 +231,35 @@ class WordProcessor:
     
     def find_word_positions(self, word: str, case_id: Optional[int] = None) -> List[Dict]:
         """
-        Find all positions of a word across cases.
+        Find all positions of a word across cases using tsvector search.
+        
+        NOTE: word_occurrence table was dropped in scalability migration (018).
+        Now uses tsvector-based search on case_sentences table.
         
         Args:
             word: Word to search for
             case_id: Optional case ID to limit search
             
         Returns:
-            List of position information
+            List of sentence information where word appears
         """
         with self.db.connect() as conn:
             if case_id:
                 query = text("""
-                    SELECT wo.case_id, wo.chunk_id, wo.sentence_id, wo.position, wd.word
-                    FROM word_occurrence wo
-                    JOIN word_dictionary wd ON wo.word_id = wd.word_id
-                    WHERE wd.word = :word AND wo.case_id = :case_id
-                    ORDER BY wo.chunk_id, wo.sentence_id, wo.position
+                    SELECT cs.case_id, cs.chunk_id, cs.sentence_id, cs.sentence_text
+                    FROM case_sentences cs
+                    WHERE cs.tsv @@ plainto_tsquery('english', :word)
+                      AND cs.case_id = :case_id
+                    ORDER BY cs.chunk_id, cs.sentence_order
                 """)
                 result = conn.execute(query, {'word': word.lower(), 'case_id': case_id})
             else:
                 query = text("""
-                    SELECT wo.case_id, wo.chunk_id, wo.sentence_id, wo.position, wd.word
-                    FROM word_occurrence wo
-                    JOIN word_dictionary wd ON wo.word_id = wd.word_id
-                    WHERE wd.word = :word
-                    ORDER BY wo.case_id, wo.chunk_id, wo.sentence_id, wo.position
+                    SELECT cs.case_id, cs.chunk_id, cs.sentence_id, cs.sentence_text
+                    FROM case_sentences cs
+                    WHERE cs.tsv @@ plainto_tsquery('english', :word)
+                    ORDER BY cs.case_id, cs.chunk_id, cs.sentence_order
+                    LIMIT 1000
                 """)
                 result = conn.execute(query, {'word': word.lower()})
             
@@ -284,8 +268,7 @@ class WordProcessor:
                     'case_id': row.case_id,
                     'chunk_id': row.chunk_id,
                     'sentence_id': row.sentence_id,
-                    'position': row.position,
-                    'word': row.word
+                    'word': word.lower()
                 }
                 for row in result
             ]
@@ -351,66 +334,12 @@ class WordProcessor:
         return len(tokens)
     
     def flush(self):
-        """Flush pending word occurrences to database using bulk insert."""
-        if not self._pending_occurrences:
-            return
+        """Flush pending word occurrences to database using bulk insert.
         
-        with self.db.connect() as conn:
-            # Filter out any occurrences with None word_id (shouldn't happen, but safety check)
-            valid_occurrences = [occ for occ in self._pending_occurrences if occ.get('word_id') is not None]
-            
-            if not valid_occurrences:
-                self._pending_occurrences = []
-                return
-            
-            # Use raw SQL with VALUES list for true bulk insert
-            # Build the VALUES clause manually for bulk insert
-            try:
-                # Batch in groups of 500 to avoid parameter limits
-                batch_size = 500
-                for i in range(0, len(valid_occurrences), batch_size):
-                    batch = valid_occurrences[i:i + batch_size]
-                    
-                    # Build VALUES clause: ($1, $2, ...), ($3, $4, ...), ...
-                    values_parts = []
-                    params = {}
-                    for idx, occ in enumerate(batch):
-                        prefix = f"p{idx}_"
-                        values_parts.append(
-                            f"(:{prefix}word_id, :{prefix}case_id, :{prefix}chunk_id, "
-                            f":{prefix}sentence_id, :{prefix}document_id, :{prefix}position)"
-                        )
-                        params[f"{prefix}word_id"] = occ['word_id']
-                        params[f"{prefix}case_id"] = occ['case_id']
-                        params[f"{prefix}chunk_id"] = occ['chunk_id']
-                        params[f"{prefix}sentence_id"] = occ['sentence_id']
-                        params[f"{prefix}document_id"] = occ['document_id']
-                        params[f"{prefix}position"] = occ['position']
-                    
-                    values_clause = ", ".join(values_parts)
-                    insert_sql = f"""
-                        INSERT INTO word_occurrence (word_id, case_id, chunk_id, sentence_id, document_id, position)
-                        VALUES {values_clause}
-                        ON CONFLICT (word_id, sentence_id, position) DO NOTHING
-                    """
-                    conn.execute(text(insert_sql), params)
-                
-                conn.commit()
-            except Exception as e:
-                # Fallback to individual inserts if bulk fails
-                logger.warning(f"Bulk insert failed, using individual: {e}")
-                conn.rollback()
-                
-                insert_query = text("""
-                    INSERT INTO word_occurrence (word_id, case_id, chunk_id, sentence_id, document_id, position)
-                    VALUES (:word_id, :case_id, :chunk_id, :sentence_id, :document_id, :position)
-                    ON CONFLICT (word_id, sentence_id, position) DO NOTHING
-                """)
-                for occ in valid_occurrences:
-                    try:
-                        conn.execute(insert_query, occ)
-                    except Exception:
-                        pass
-                conn.commit()
-        
+        NOTE: word_occurrence table was dropped in scalability migration (018).
+        We now rely on tsvector columns on case_chunks and case_sentences for full-text search.
+        This method now just clears the pending buffer.
+        """
+        # word_occurrence table removed - using tsvector instead
+        # Just clear the buffer
         self._pending_occurrences = []

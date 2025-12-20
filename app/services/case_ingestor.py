@@ -518,7 +518,7 @@ class LegalCaseIngestor:
                     (SELECT COUNT(*) FROM arguments WHERE case_id = :case_id) as arguments,
                     (SELECT COUNT(*) FROM citation_edges WHERE source_case_id = :case_id) as citations,
                     (SELECT COUNT(*) FROM case_phrases WHERE case_id = :case_id) as phrases,
-                    (SELECT COUNT(DISTINCT word_id) FROM word_occurrence WHERE case_id = :case_id) as unique_words
+                    (SELECT COUNT(*) FROM case_sentences cs JOIN case_chunks cc ON cs.chunk_id = cc.chunk_id WHERE cc.case_id = :case_id) as sentences
                 FROM cases c
                 WHERE c.case_id = :case_id
             """)
@@ -546,7 +546,7 @@ class LegalCaseIngestor:
                 },
                 'search_indices': {
                     'phrases': row.phrases,
-                    'unique_words': row.unique_words
+                    'sentences': row.sentences
                 }
             }
     
