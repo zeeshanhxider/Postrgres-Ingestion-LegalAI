@@ -203,6 +203,9 @@ def process_batch(args):
     db_url = Config.get_database_url()
     inserter = DatabaseInserter.from_url(db_url, enable_rag=args.enable_rag)
     
+    # Pre-warm DB connections and embedding model before batch processing
+    inserter.prewarm()
+    
     # Configure RAG options
     if args.enable_rag:
         inserter.configure_rag(

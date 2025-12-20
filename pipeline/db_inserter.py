@@ -23,6 +23,31 @@ logger = logging.getLogger(__name__)
 # Global lock for Ollama API calls to prevent overload
 _ollama_embedding_lock = threading.Lock()
 
+# Pre-warmed embedding model instance
+_cached_embeddings_model = None
+_cached_embeddings_model_name = None
+
+
+def _get_embeddings_model(model: str = None):
+    """Get or create cached embeddings model."""
+    global _cached_embeddings_model, _cached_embeddings_model_name
+    
+    ollama_model = model or os.getenv("OLLAMA_EMBED_MODEL", "mxbai-embed-large")
+    ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    
+    # Return cached model if same model name
+    if _cached_embeddings_model is not None and _cached_embeddings_model_name == ollama_model:
+        return _cached_embeddings_model
+    
+    try:
+        from langchain_ollama import OllamaEmbeddings
+    except ImportError:
+        from langchain_community.embeddings import OllamaEmbeddings
+    
+    _cached_embeddings_model = OllamaEmbeddings(model=ollama_model, base_url=ollama_base_url)
+    _cached_embeddings_model_name = ollama_model
+    return _cached_embeddings_model
+
 
 def generate_embedding(text: str, model: str = None) -> Optional[List[float]]:
     """
@@ -31,18 +56,46 @@ def generate_embedding(text: str, model: str = None) -> Optional[List[float]]:
     """
     with _ollama_embedding_lock:
         try:
-            try:
-                from langchain_ollama import OllamaEmbeddings
-            except ImportError:
-                from langchain_community.embeddings import OllamaEmbeddings
-            
-            ollama_model = model or os.getenv("OLLAMA_EMBED_MODEL", "mxbai-embed-large")
-            ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-            embeddings = OllamaEmbeddings(model=ollama_model, base_url=ollama_base_url)
+            embeddings = _get_embeddings_model(model)
             return embeddings.embed_query(text)
         except Exception as e:
             logger.error(f"Embedding generation failed: {e}")
             return None
+
+
+def generate_embeddings_batch(texts: List[str], model: str = None) -> List[Optional[List[float]]]:
+    """
+    Generate embeddings for multiple texts in a single batch call (thread-safe).
+    Much faster than calling generate_embedding multiple times.
+    Returns list of embeddings (1024-dim vectors for mxbai-embed-large).
+    """
+    if not texts:
+        return []
+    
+    with _ollama_embedding_lock:
+        try:
+            embeddings = _get_embeddings_model(model)
+            # embed_documents handles batching internally
+            return embeddings.embed_documents(texts)
+        except Exception as e:
+            logger.error(f"Batch embedding generation failed: {e}")
+            # Fall back to individual embeddings
+            return [None] * len(texts)
+
+
+def prewarm_embedding_model(model: str = None):
+    """
+    Pre-warm the embedding model by loading it into memory.
+    Call this before batch processing to avoid cold-start latency.
+    """
+    logger.info("Pre-warming embedding model...")
+    try:
+        embeddings = _get_embeddings_model(model)
+        # Do a small test embedding to fully initialize
+        embeddings.embed_query("warmup")
+        logger.info("Embedding model pre-warmed successfully")
+    except Exception as e:
+        logger.warning(f"Failed to pre-warm embedding model: {e}")
 
 
 class DatabaseInserter:
@@ -104,6 +157,29 @@ class DatabaseInserter:
             self._dimension_service = DimensionService(self.db)
         return self._dimension_service
     
+    def prewarm(self):
+        """
+        Pre-warm database connections and embedding model.
+        Call this before batch processing to avoid cold-start latency.
+        """
+        import time
+        start = time.time()
+        logger.info("Pre-warming database connections and embedding model...")
+        
+        # Pre-warm DB connection pool by executing a simple query
+        try:
+            with self.db.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            logger.info("Database connection pool warmed up")
+        except Exception as e:
+            logger.warning(f"Failed to warm up DB connection: {e}")
+        
+        # Pre-warm embedding model
+        prewarm_embedding_model()
+        
+        elapsed = time.time() - start
+        logger.info(f"Pre-warming complete in {elapsed:.2f}s")
+    
     def configure_rag(
         self,
         chunk_embedding_mode: str = "all",
@@ -125,13 +201,14 @@ class DatabaseInserter:
             phrase_filter_mode=phrase_filter_mode
         )
     
-    def insert_case(self, case: ExtractedCase) -> Optional[int]:
+    def insert_case(self, case: ExtractedCase, precomputed_embedding: Optional[List[float]] = None) -> Optional[int]:
         """
         Insert a complete case with all related entities.
         Optionally runs RAG processing for chunks, sentences, words, phrases.
         
         Args:
             case: ExtractedCase object with all data
+            precomputed_embedding: Optional pre-computed embedding (for batch optimization)
             
         Returns:
             case_id if successful, None if failed, -1 if duplicate updated
@@ -142,7 +219,7 @@ class DatabaseInserter:
                 
                 try:
                     # 1. Insert main case record (returns tuple: case_id, was_inserted)
-                    case_id, was_inserted = self._insert_case_record(conn, case)
+                    case_id, was_inserted = self._insert_case_record(conn, case, precomputed_embedding=precomputed_embedding)
                     
                     if was_inserted:
                         logger.info(f"Inserted case with ID: {case_id}")
@@ -353,14 +430,20 @@ class DatabaseInserter:
             logger.error(f"RAG processing failed for case {case_id}: {e}")
             # Don't fail the whole insert if RAG fails
     
-    def _insert_case_record(self, conn, case: ExtractedCase) -> int:
-        """Insert main case record and return case_id."""
+    def _insert_case_record(self, conn, case: ExtractedCase, precomputed_embedding: Optional[List[float]] = None) -> int:
+        """Insert main case record and return case_id.
+        
+        Args:
+            conn: Database connection
+            case: ExtractedCase object
+            precomputed_embedding: Optional pre-computed embedding (for batch optimization)
+        """
         
         meta = case.metadata
         
-        # Generate embedding for full text
-        full_embedding = None
-        if case.full_text and len(case.full_text) > 100:
+        # Use precomputed embedding if provided, otherwise generate
+        full_embedding = precomputed_embedding
+        if full_embedding is None and case.full_text and len(case.full_text) > 100:
             # Use summary + first part of text for embedding (more semantic)
             embed_text = f"{case.summary}\n\n{case.full_text[:4000]}"
             logger.info("Generating full_embedding...")
@@ -1237,16 +1320,45 @@ class DatabaseInserter:
             Dictionary with success/failure counts
         """
         from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
+        import time
         
         results = {'success': 0, 'failed': 0, 'case_ids': [], 'duplicates': 0}
         
         if not cases:
             return results
         
+        # OPTIMIZATION: Pre-generate all embeddings in a single batch call
+        logger.info(f"Pre-generating embeddings for {len(cases)} cases in batch...")
+        embed_start = time.time()
+        
+        # Prepare texts for embedding
+        embed_texts = []
+        case_to_embed_idx = {}  # Map case to its embedding index
+        for i, case in enumerate(cases):
+            if case.full_text and len(case.full_text) > 100:
+                embed_text = f"{case.summary}\n\n{case.full_text[:4000]}"
+                case_to_embed_idx[id(case)] = len(embed_texts)
+                embed_texts.append(embed_text)
+            else:
+                case_to_embed_idx[id(case)] = None
+        
+        # Generate all embeddings in one batch call
+        batch_embeddings = []
+        if embed_texts:
+            batch_embeddings = generate_embeddings_batch(embed_texts)
+            embed_elapsed = time.time() - embed_start
+            logger.info(f"Batch embedding complete: {len(batch_embeddings)} embeddings in {embed_elapsed:.2f}s")
+        
         def process_single_case(case: ExtractedCase) -> Optional[int]:
-            """Process a single case (insert + RAG)."""
+            """Process a single case (insert + RAG) with pre-computed embedding."""
             try:
-                result = self.insert_case(case)
+                # Get pre-computed embedding for this case
+                embed_idx = case_to_embed_idx.get(id(case))
+                precomputed_embedding = None
+                if embed_idx is not None and embed_idx < len(batch_embeddings):
+                    precomputed_embedding = batch_embeddings[embed_idx]
+                
+                result = self.insert_case(case, precomputed_embedding=precomputed_embedding)
                 logger.debug(f"insert_case returned {result} for {case.metadata.case_number}")
                 return result
             except Exception as e:

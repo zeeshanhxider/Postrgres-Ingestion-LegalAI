@@ -30,9 +30,12 @@ CASE_TABLES = [
     "statute_citations",
     "citation_edges",
     "issue_chunks",
+    "issue_rcw",
     "issues_decisions",
     "word_occurrence",
     "embeddings",
+    "documents",  # Links cases and briefs (case_id FK)
+    "ingestion_batches",  # Tracks batch processing jobs
     # Parent tables
     "parties",
     "judges",
@@ -41,9 +44,13 @@ CASE_TABLES = [
     "courts_dim",
     "stage_types",
     "statutes_dim",
+    "rcw_dim",
+    "legal_taxonomy",
+    "document_types",
+    "word_dictionary",
 ]
 
-# Tables to NEVER touch (briefs-related)
+# Tables to NEVER touch (briefs-related and user data)
 PROTECTED_TABLES = [
     "briefs",
     "brief_arguments",
@@ -54,6 +61,8 @@ PROTECTED_TABLES = [
     "brief_word_occurrence",
     "arguments",
     "attorneys",
+    "users",         # User accounts
+    "chat_logs",     # User conversation history
 ]
 
 

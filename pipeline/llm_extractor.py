@@ -158,11 +158,11 @@ class LLMExtractor:
         Initialize the LLM extractor.
         
         Args:
-            model: Ollama model name (default: from OLLAMA_MODEL env or 'llama3.1:8b')
+            model: Ollama model name (default: from OLLAMA_MODEL env or 'llama3.2:3b')
             base_url: Ollama server URL (default: from OLLAMA_BASE_URL env or 'http://localhost:11434')
             timeout: Request timeout in seconds
         """
-        self.model = model or os.getenv("OLLAMA_MODEL", "llama3.1:8b")
+        self.model = model or os.getenv("OLLAMA_MODEL", "llama3.2:3b")
         self.base_url = base_url or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
         self.timeout = timeout
         
