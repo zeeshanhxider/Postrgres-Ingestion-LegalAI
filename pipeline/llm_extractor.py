@@ -102,9 +102,9 @@ Return this JSON structure:
         "key_statutes_cited": ["List ALL specific RCWs cited, e.g., 'RCW 9.94A.525', 'RCW 42.56.010'"],
         "issues": [
             {{
-                "case_type": "Choose ONE top-level case type: Criminal, Civil, Family, Administrative, Constitutional, Juvenile, Probate, Real Property, OR Other",
-                "category": "Major topic bucket within the area (e.g., 'Parenting Plan', 'Sentencing', 'Contract Breach', 'Summary Judgment')",
-                "subcategory": "Specific detail if applicable (e.g., 'Residential Schedules', 'Exceptional Sentence', 'Statute of Limitations') OR null",
+                "case_type": "Choose ONE top-level case type: Criminal, Civil, Family, Administrative, Constitutional, Juvenile, Probate, Real Property, Employment, OR Other",
+                "category": "The specific LEGAL TOPIC being addressed. MUST be different from case_type! Examples: For Criminal→'Sentencing','Evidence','Search & Seizure'. For Family→'Parenting Plan','Child Custody','Property Division'. For Civil→'Contract Breach','Negligence','Summary Judgment'. NEVER repeat the case_type name here!",
+                "subcategory": "Even more specific detail within the category. Examples: For Sentencing→'Exceptional Sentence','Drug Offender Sentencing'. For Parenting Plan→'Residential Schedule','Decision Making'. For Contract→'Statute of Limitations','Implied Warranty'. Use null if no specific subcategory applies.",
                 "question": "The specific legal question for THIS issue - be precise and distinct from other issues",
                 "ruling": "How the court specifically ruled on THIS issue",
                 "outcome": "Choose EXACTLY ONE: Affirmed, Reversed, Remanded, Dismissed, Mixed",
@@ -123,6 +123,22 @@ Return this JSON structure:
         "opinion_filed_date": "Date in YYYY-MM-DD format OR null if not clear"
     }}
 }}
+
+HIERARCHY RULES - VERY IMPORTANT:
+- case_type is the BROAD area: Criminal, Civil, Family, etc.
+- category is the SPECIFIC topic: Sentencing, Evidence, Parenting Plan, Negligence, etc.
+- subcategory is the DETAIL: Exceptional Sentence, Residential Schedule, Comparative Fault, etc.
+- NEVER use the same value for case_type and category! They must be different!
+- Examples of CORRECT hierarchies:
+  * Criminal → Sentencing → Exceptional Sentence
+  * Criminal → Evidence → Hearsay
+  * Family → Child Custody → Residential Schedule
+  * Civil → Negligence → Comparative Fault
+  * Employment → Wrongful Termination → Retaliation
+- Examples of INCORRECT (redundant) hierarchies to AVOID:
+  * Criminal → Criminal Law → ... (WRONG! Don't repeat)
+  * Family → Family Law → ... (WRONG! Don't repeat)
+  * Juvenile → Juvenile → ... (WRONG! Don't repeat)
 
 REMEMBER: Most appellate opinions have 2-5 distinct issues. Extract EACH issue as a separate entry in the issues array."""
 
